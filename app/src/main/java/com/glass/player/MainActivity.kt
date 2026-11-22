@@ -2166,8 +2166,8 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                                 radius = core, center = c0)
                         }
                     })
-                    Column(Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 16.dp)) {
-                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.fillMaxSize().statusBarsPadding()) {
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                             Text("Glass Player", color = pal.text.copy(alpha = 0.88f), fontSize = 25.sp, fontFamily = TitleFont,
                                 fontWeight = FontWeight.Medium, letterSpacing = 2.sp,
                                 modifier = Modifier.padding(vertical = 10.dp).logoShimmer())
@@ -2191,9 +2191,9 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                                 Icon(IGear, contentDescription = null, tint = pal.text, modifier = Modifier.size(22.dp))
                             }
                         }
-                        // صف الشرائح: يتحرك مع السحب حي، والشريحة المحددة دايماً بنص الشاشة (التمرير برمجي بس)
+                        // صف الشرائح: تقدر تسحبه عرضياً بإصبعك، وبعد كل انتقال يرجّع الشريحة المحددة لنص الشاشة
                         Row(
-                            Modifier.fillMaxWidth().bleed(16.dp).onSizeChanged { chipRowW = it.width }.horizontalScroll(chipScroll, enabled = false),
+                            Modifier.fillMaxWidth().onSizeChanged { chipRowW = it.width }.horizontalScroll(chipScroll),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             val sideW = (androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp / 2).dp
@@ -2208,7 +2208,7 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                             Spacer(Modifier.width(sideW))
                         }
                         // النقطة الديناميكية: تتبع إصبعك بالضبط بين الشرائح وتتمدد وهي تتحرك (نفس سحب المفضلة)
-                        Box(Modifier.fillMaxWidth().bleed(16.dp).height(12.dp)
+                        Box(Modifier.fillMaxWidth().height(12.dp)
                             .drawBehind {
                                 val n = pager.pageCount
                                 val pos = pagePos().coerceIn(0f, (n - 1).toFloat())
