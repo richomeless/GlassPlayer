@@ -209,6 +209,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // فتح جديد للتطبيق (مو من إشعار التشغيل ولا من فيديو خارجي): ما نكمل أي فيديو كان شغال قبل الإغلاق
+        val coldStart = savedInstanceState == null &&
+            intent?.getBooleanExtra("open_player", false) != true && intent?.action != android.content.Intent.ACTION_VIEW
         Logs.install(applicationContext)
         initFonts(applicationContext)
         handleOpenIntent(intent)
@@ -219,7 +222,9 @@ class MainActivity : ComponentActivity() {
         val token = SessionToken(this, ComponentName(this, PlaybackService::class.java))
         val f = MediaController.Builder(this, token).buildAsync()
         f.addListener({
-            controller.value = f.get()
+            val mc = f.get()
+            if (coldStart && mc.mediaItemCount > 0) { mc.stop(); mc.clearMediaItems() }
+            controller.value = mc
             // لو الشاشة انفتحت من جديد قبل ما يتصل المتحكم، onStart ما قدر يرجّع الفيديو: نرجّعه هنا
             if (lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)) setVideo(true)
         }, MoreExecutors.directExecutor())
@@ -1278,6 +1283,14 @@ fun GlassIcon(icon: ImageVector, modifier: Modifier = Modifier, tint: Color = Co
 }
 
 @OptIn(ExperimentalFoundationApi::class)
+// يوسّع العنصر لحافتي الشاشة (يتجاوز هامش الأب الأفقي) عشان ما ينقص طرفه عند الحواف
+fun Modifier.bleed(extra: androidx.compose.ui.unit.Dp): Modifier = this.layout { m, c ->
+    val e = extra.roundToPx()
+    val w = c.maxWidth + 2 * e
+    val p = m.measure(c.copy(minWidth = w, maxWidth = w))
+    layout(c.maxWidth, p.height) { p.place(-e, 0) }
+}
+
 @Composable
 fun Chip(text: String, sel: () -> Float, modifier: Modifier = Modifier, onLong: () -> Unit = {}, onClick: () -> Unit) {
     // نفس الارتفاع ونفس الشكل لكل الأزرار، والتحديد تظليل حي يتبع السحب (يُقرأ وقت الرسم بس)
@@ -1700,7 +1713,7 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
             if (target != null) {
                 val t = target.toInt().coerceAtLeast(0)
                 if (first) { first = false; chipScroll.scrollTo(t) }
-                else chipScroll.animateScrollTo(t, tween(320, easing = FastOutSlowInEasing))
+                else chipScroll.animateScrollTo(t, tween(750, easing = FastOutSlowInEasing))
             }
         }
     }
@@ -2180,10 +2193,10 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                         }
                         // صف الشرائح: يتحرك مع السحب حي، والشريحة المحددة دايماً بنص الشاشة (التمرير برمجي بس)
                         Row(
-                            Modifier.fillMaxWidth().onSizeChanged { chipRowW = it.width }.horizontalScroll(chipScroll, enabled = false),
+                            Modifier.fillMaxWidth().bleed(16.dp).onSizeChanged { chipRowW = it.width }.horizontalScroll(chipScroll, enabled = false),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            val sideW = ((androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp - 32) / 2).dp
+                            val sideW = (androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp / 2).dp
                             Spacer(Modifier.width(sideW))
                             Chip("★ المفضلة", { (1f - kotlin.math.abs(pagePos())).coerceIn(0f, 1f) },
                                 Modifier.onGloballyPositioned { val o = Offset(it.positionInParent().x, it.size.width.toFloat()); if (chipPos[0] != o) chipPos[0] = o }) { tab = -1 }
@@ -2195,7 +2208,7 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                             Spacer(Modifier.width(sideW))
                         }
                         // النقطة الديناميكية: تتبع إصبعك بالضبط بين الشرائح وتتمدد وهي تتحرك (نفس سحب المفضلة)
-                        Box(Modifier.fillMaxWidth().height(12.dp)
+                        Box(Modifier.fillMaxWidth().bleed(16.dp).height(12.dp)
                             .drawBehind {
                                 val n = pager.pageCount
                                 val pos = pagePos().coerceIn(0f, (n - 1).toFloat())

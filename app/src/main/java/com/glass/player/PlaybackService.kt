@@ -35,10 +35,10 @@ class PlaybackService : MediaSessionService() {
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
 
-    // لو سحبت التطبيق من الأخيرة وما في تشغيل شغال نوقف الخدمة
+    // سحبت التطبيق من الأخيرة: نوقف التشغيل ونقفل الخدمة، ما يكمل أي فيديو بعد الإغلاق
     override fun onTaskRemoved(rootIntent: Intent?) {
-        val p = session?.player
-        if (p == null || !p.playWhenReady || p.mediaItemCount == 0) stopSelf()
+        session?.player?.let { it.stop(); it.clearMediaItems() }
+        stopSelf()
     }
 
     override fun onDestroy() {
