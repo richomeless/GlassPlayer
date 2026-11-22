@@ -190,6 +190,9 @@ class Store(ctx: Context) {
     fun setHap(key: String, b: Boolean) = p.edit().putBoolean(key, b).apply()
     fun pipMode(): Boolean = p.getBoolean("pip", true)
     fun setPipMode(b: Boolean) = p.edit().putBoolean("pip", b).apply()
+    // إيماءات المشغل الجانبية (تقديم/تأخير بالسحب + صوت + سطوع): خيار وحد يشغلها ويطفيها كلها
+    fun swipeGestures(): Boolean = p.getBoolean("swipe", true)
+    fun setSwipeGestures(b: Boolean) = p.edit().putBoolean("swipe", b).apply()
     fun favs(): List<Channel> = (p.getString("fav", "") ?: "").split("\n").filter { it.isNotBlank() }.map {
         val f = it.split("\t")
         Channel(f[0], f.getOrElse(1) { "" }, f.getOrElse(2) { "" }, f.getOrElse(3) { "" }, f.getOrElse(4) { "" })
@@ -1173,6 +1176,15 @@ fun fmtDur(ms: Long): String {
     return if (h > 0) "%d:%02d:%02d".format(h, m, sec) else "%d:%02d".format(m, sec)
 }
 
+fun activityOf(c: Context): android.app.Activity? {
+    var x: Context = c
+    while (x is android.content.ContextWrapper) {
+        if (x is android.app.Activity) return x
+        x = x.baseContext
+    }
+    return null
+}
+
 fun fmtSpeed(s: Float): String = (if (s % 1f == 0f) s.toInt().toString() else s.toString()) + "x"
 
 // سلايدر تقديم الفيديو: نفس زجاج وإطار سلايدر الصوت، يتحرك مع التشغيل، والسحب عليه يقدّم أو يرجّع الفيديو
@@ -1240,12 +1252,12 @@ fun GlassSeek(player: Player, onTouch: () -> Unit, modifier: Modifier = Modifier
 // صورة مصغّرة للفيديو من مكتبة الجوال.
 // الكاش محدود بالحجم الفعلي (24MB) مو بالعدد، والتحميل على خيطين بس عشان التمرير السريع ما يخنق المعالج،
 // وفي تأخير بسيط قبل التحميل: لو البطاقة طلعت من الشاشة قبله ينلغي التحميل بالكامل
-private val thumbCache = object : android.util.LruCache<String, ImageBitmap>(24 * 1024 * 1024) {
+private val thumbCache = object : android.util.LruCache<String, ImageBitmap>(48 * 1024 * 1024) {
     override fun sizeOf(key: String, value: ImageBitmap): Int = (value.width * value.height * 4).coerceAtLeast(1)
 }
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-private val thumbIO = Dispatchers.IO.limitedParallelism(2)
+private val thumbIO = Dispatchers.IO.limitedParallelism(3)
 
 @Composable
 fun rememberThumb(uri: String): ImageBitmap? {
@@ -1257,7 +1269,7 @@ fun rememberThumb(uri: String): ImageBitmap? {
             val signal = android.os.CancellationSignal()
             val job = async(thumbIO) {
                 try {
-                    val raw = ctx.contentResolver.loadThumbnail(android.net.Uri.parse(uri), android.util.Size(360, 203), signal)
+                    val raw = ctx.contentResolver.loadThumbnail(android.net.Uri.parse(uri), android.util.Size(720, 405), signal)
                     // نحوّلها لصورة على كرت الشاشة مرة وحدة: أخف على الذاكرة والرسم أسرع
                     val hw = try { raw.copy(android.graphics.Bitmap.Config.HARDWARE, false) } catch (_: Throwable) { null }
                     val img = if (hw != null) { raw.recycle(); hw } else raw
@@ -1323,7 +1335,8 @@ fun Tile(c: Channel, fav: Boolean, onLong: () -> Unit, onClick: (Rect) -> Unit) 
             contentAlignment = Alignment.Center) {
             if (thumb == null) Text(cleanName(c.name).take(1), color = LocalPal.current.text, fontSize = 28.sp)
             else Image(thumb, contentDescription = null, contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize().padding(1.dp).clip(RoundedCornerShape(21.dp)))
+                modifier = Modifier.fillMaxSize().padding(1.dp).clip(RoundedCornerShape(21.dp)),
+                filterQuality = androidx.compose.ui.graphics.FilterQuality.Medium)
             // مدة الفيديو
             c.ref.toLongOrNull()?.takeIf { it > 0L }?.let { d ->
                 Text(fmtDur(d), color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Medium,
@@ -1645,6 +1658,25 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
     var speed by remember { mutableStateOf(1f) }
     var pipMode by remember { mutableStateOf(store.pipMode()) }
     var menu by remember { mutableStateOf(false) }
+    var menuPage by remember { mutableIntStateOf(0) }       // 0 القائمة الرئيسية، 1 اختيار السرعة
+    var swipeOn by remember { mutableStateOf(store.swipeGestures()) }
+    var hud by remember { mutableIntStateOf(0) }            // 0 لا شي، 1 صوت، 2 سطوع، 3 تقديم/تأخير
+    var hudLevel by remember { mutableFloatStateOf(0f) }
+    var hudText by remember { mutableStateOf("") }
+    var hudHold by remember { mutableStateOf(false) }
+    var hudTick by remember { mutableIntStateOf(0) }
+    LaunchedEffect(hudTick) { if (hudTick > 0) { delay(700); if (!hudHold) hud = 0 } }
+    val audio = remember { ctx.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager }
+    val hostAct = remember { activityOf(ctx) }
+    fun curBright(): Float {
+        val b = hostAct?.window?.attributes?.screenBrightness ?: -1f
+        return if (b >= 0f) b else try {
+            android.provider.Settings.System.getInt(ctx.contentResolver, android.provider.Settings.System.SCREEN_BRIGHTNESS) / 255f
+        } catch (_: Throwable) { 0.5f }
+    }
+    fun setBright(v: Float) {
+        hostAct?.window?.let { w -> val lp = w.attributes; lp.screenBrightness = v; w.attributes = lp }
+    }
     val scope = rememberCoroutineScope()
     val hapticView = androidx.compose.ui.platform.LocalView.current
     fun pullLogs() {
@@ -1676,6 +1708,7 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
     var skipTick by remember { mutableIntStateOf(0) }
     LaunchedEffect(skipTick) { if (skipTick > 0) { delay(650); skipDir = 0 } }
     LaunchedEffect(resumeAsk) { if (resumeAsk > 0L) { delay(9000); resumeAsk = 0L } }
+    LaunchedEffect(cur == null) { if (cur == null) hostAct?.window?.let { w -> val lp = w.attributes; lp.screenBrightness = -1f; w.attributes = lp } }
     LaunchedEffect(cur, ui, menu, uiTick) {
         if (cur != null && ui && !menu) {
             snapshotFlow { reveal.value }.first { it >= 0.99f }
@@ -1684,21 +1717,19 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
         }
     }
     // حالة الشبكة هنا فوق عشان ترجع لنفس المكان بعد الخروج من القناة
-    val favState = rememberLazyGridState()
-    ScrollTicks(favState, hapticView)
     fun gridFor(name: String) = listGrids.getOrPut(name) { LazyGridState() }
-    // الصفحة 0 = المفضلة، والصفحة i+1 = القائمة i (كل قائمة صفحة حقيقية، والسحب بينها حي)
-    val pager = rememberPagerState(initialPage = 1, pageCount = { 1 + lists.size })
+    // الصفحة i = القائمة i (كل قائمة صفحة حقيقية، والسحب بينها حي)
+    val pager = rememberPagerState(initialPage = 0, pageCount = { lists.size })
     var mainTab by remember { mutableStateOf(0) }
     LaunchedEffect(tab) {
         if (tab >= 0) mainTab = tab
-        val target = tab + 1
+        val target = tab
         if (pager.currentPage != target) pager.animateScrollToPage(target)
     }
     fun pagePos() = pager.currentPage + pager.currentPageOffsetFraction
     LaunchedEffect(pager) {
         snapshotFlow { pager.settledPage }.collect { pg ->
-            val t = pg - 1
+            val t = pg
             if (tab != t) tab = t
             if (t >= 0) mainTab = t
         }
@@ -1753,7 +1784,7 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
         if (hasPerm) {
             val cp = pager.settledPage
             for (pg in listOf(cp, cp - 1, cp + 1)) {
-                val name = lists.getOrNull(pg - 1) ?: continue
+                val name = lists.getOrNull(pg) ?: continue
                 if (pg == cp || listChannels[name] == null) {
                     listChannels[name] = withContext(Dispatchers.IO) { loadVideos(ctx, name) }
                 }
@@ -1962,7 +1993,7 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
     // عدد مرات التشغيل يتحدّث لما ترجع للقائمة (عشان ما تتحرك البطاقات وأنت داخل قناة)
     LaunchedEffect(cur == null) { if (cur == null) counts = store.counts() }
     // كل قائمة لها ترتيبها الخاص (المفضلة = "fav")
-    fun sortKey(): String = if (tab == -1) "fav" else "f:" + (lists.getOrNull(mainTab) ?: "")
+    fun sortKey(): String = "f:" + (lists.getOrNull(mainTab) ?: "")
     // هزة عند التنقل بين القوائم
     // الهزة فورية: عند الضغط على القائمة مباشرة، أو لما الصفحة تعدّي نصف السحب (مو بعد ما تستقر)
     var lastTick by remember { mutableStateOf(0L) }
@@ -2071,14 +2102,14 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                                 }
                             }
                         }, userScrollEnabled = false, beyondViewportPageCount = 1) { page ->
-                        val isFavPage = page == 0
-                        val listName = lists.getOrNull(page - 1) ?: ""
+                        val isFavPage = false
+                        val listName = lists.getOrNull(page) ?: ""
                         val pageSrc = if (isFavPage) favs else listChannels[listName]
                         val smode = sorts[if (isFavPage) "fav" else "f:$listName"] ?: 0
                         val shownList = remember(isFavPage, pageSrc, smode, counts) {
                             sortChannels(pageSrc ?: emptyList(), smode, counts)
                         }
-                        val gs = if (isFavPage) favState else gridFor(listName)
+                        val gs = gridFor(listName)
                         if (!isFavPage) ScrollTicks(gs, hapticView)
                         Box(Modifier.fillMaxSize()) {
                             LazyVerticalGrid(
@@ -2090,7 +2121,7 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                                 modifier = Modifier.fillMaxSize()
                             ) {
                                 items(shownList, contentType = { "tile" }) { ch ->
-                                    Tile(ch, ch.url in favUrls, onLong = { toggleFav(ch) }) { r -> start(ch, r) }
+                                    Tile(ch, false, onLong = {}) { r -> start(ch, r) }
                                 }
                             }
                             if (isFavPage && favs.isEmpty()) Text("اضغط مطولاً على أي فيديو لإضافته للمفضلة", color = pal.textDim,
@@ -2181,7 +2212,7 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                                         DropdownMenuItem(text = { Text(if ((sorts[sortKey()] ?: 0) == i) "✓  $t" else t) }, onClick = {
                                             val k = sortKey()
                                             sorts = sorts + (k to i); store.saveSorts(sorts); menuSort = false
-                                            scope.launch { (if (tab == -1) favState else gridFor(lists.getOrNull(mainTab) ?: "")).scrollToItem(0) }
+                                            scope.launch { gridFor(lists.getOrNull(mainTab) ?: "").scrollToItem(0) }
                                         })
                                     }
                                 }
@@ -2198,12 +2229,10 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                         ) {
                             val sideW = (androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp / 2).dp
                             Spacer(Modifier.width(sideW))
-                            Chip("★ المفضلة", { (1f - kotlin.math.abs(pagePos())).coerceIn(0f, 1f) },
-                                Modifier.onGloballyPositioned { val o = Offset(it.positionInParent().x, it.size.width.toFloat()); if (chipPos[0] != o) chipPos[0] = o }) { tab = -1 }
                             lists.forEachIndexed { i, u ->
                                 val label = if (u.isEmpty()) "كل الفيديوهات" else u
-                                Chip(label.take(24), { (1f - kotlin.math.abs(pagePos() - (i + 1))).coerceIn(0f, 1f) },
-                                    Modifier.onGloballyPositioned { val o = Offset(it.positionInParent().x, it.size.width.toFloat()); if (chipPos[i + 1] != o) chipPos[i + 1] = o }) { tab = i }
+                                Chip(label.take(24), { (1f - kotlin.math.abs(pagePos() - i)).coerceIn(0f, 1f) },
+                                    Modifier.onGloballyPositioned { val o = Offset(it.positionInParent().x, it.size.width.toFloat()); if (chipPos[i] != o) chipPos[i] = o }) { tab = i }
                             }
                             Spacer(Modifier.width(sideW))
                         }
@@ -2270,6 +2299,9 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                             // هزات برايل: نقطة بنفس الشدة كل مسافة ثابتة من السحب (بدون تصاعد)، نزولاً وصعوداً
                             val brStep = 26.dp.toPx()
                             var brIdx = 0
+                            var vBase = 0f; var bBase = 0f
+                            var seekBase = 0L; var seekSpan = 0L; var seekTarget = -1L
+                            var hIdx = Int.MIN_VALUE
                             while (true) {
                                 val ev = awaitPointerEvent()
                                 val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
@@ -2285,7 +2317,26 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                                     val vert = kotlin.math.abs(ay) > kotlin.math.abs(ax)
                                     val limM = panLimit(zoom, size.width.toFloat(), size.height.toFloat())
                                     val canPanDown = zoom > 1.02f && panY < limM.y - 1f
-                                    if (zoom <= 1.02f && full) {
+                                    // الإيماءات الجانبية (لو مفعّلة): أقصى اليمين = صوت النظام، أقصى اليسار = السطوع (سحب عمودي)، وأي سحب أفقي = تقديم/تأخير
+                                    val zfx = if (rot) down.position.y / size.height else down.position.x / size.width
+                                    val edgeZ = if (zfx > 0.8f) 1 else if (zfx < 0.2f) -1 else 0
+                                    if (swipeOn && zoom <= 1.02f && !closing && (!vert || edgeZ != 0)) {
+                                        if (!vert) {
+                                            val pl = player
+                                            if (pl != null && pl.duration > 0L) {
+                                                mode = 6; seekBase = pl.currentPosition; seekSpan = minOf(180_000L, pl.duration); seekTarget = seekBase
+                                            }
+                                        } else if (edgeZ > 0) {
+                                            mode = 4; vBase = audio.getStreamVolume(android.media.AudioManager.STREAM_MUSIC).toFloat() /
+                                                audio.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                                        } else {
+                                            mode = 5; bBase = curBright()
+                                        }
+                                        if (mode >= 4) hudHold = true
+                                    }
+                                    if (mode >= 4) {
+                                        // قرار الإيماءة الجانبية اتخذ: نتخطى إيماءات الشاشة الكاملة والإغلاق
+                                    } else if (zoom <= 1.02f && full) {
                                         // شاشة كاملة: السحب بأي اتجاه يلغيها ويرجع للبورتريه
                                         mode = 2
                                     } else if (zoom <= 1.02f && vert) {
@@ -2299,7 +2350,38 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                                         mode = 3
                                     }
                                 }
-                                if (mode == 3) {
+                                if (mode >= 4) {
+                                    val picH = (if (rot) size.width else size.height).toFloat()
+                                    val picWd = (if (rot) size.height else size.width).toFloat()
+                                    when (mode) {
+                                        4 -> {
+                                            val lv = (vBase - ay / (picH * 0.7f)).coerceIn(0f, 1f)
+                                            val mx = audio.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
+                                            val iv = Math.round(lv * mx)
+                                            if (audio.getStreamVolume(android.media.AudioManager.STREAM_MUSIC) != iv) {
+                                                audio.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, iv, 0)
+                                                buzz(hapticView, false)
+                                            }
+                                            hud = 1; hudLevel = lv
+                                        }
+                                        5 -> {
+                                            val lv = (bBase - ay / (picH * 0.7f)).coerceIn(0.02f, 1f)
+                                            setBright(lv)
+                                            val bi = (lv * 20f).toInt()
+                                            if (bi != hIdx) { if (hIdx != Int.MIN_VALUE) buzz(hapticView, false); hIdx = bi }
+                                            hud = 2; hudLevel = lv
+                                        }
+                                        else -> {
+                                            val dur = player?.duration ?: 0L
+                                            val t = (seekBase + (ax / picWd * seekSpan).toLong()).coerceIn(0L, if (dur > 0L) dur else seekBase)
+                                            seekTarget = t
+                                            val si = ((t - seekBase) / 10_000L).toInt()
+                                            if (si != hIdx) { if (hIdx != Int.MIN_VALUE) buzz(hapticView, false); hIdx = si }
+                                            hud = 3; hudText = (if (t >= seekBase) "+" else "-") + fmtDur(kotlin.math.abs(t - seekBase)) + "   ·   " + fmtDur(t)
+                                        }
+                                    }
+                                    ch.consume()
+                                } else if (mode == 3) {
                                     // سحب للأسفل في البورتريه: الفيديو ينزل مع الإصبع (حتى لو مقرّب)
                                     dismissDrag = ay.coerceAtLeast(0f)
                                     ch.consume()
@@ -2324,7 +2406,7 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                                     fpDrag = prog
                                     ch.consume()
                                 }
-                                if (mode != 0) {
+                                if (mode in 1..3) {
                                     // المسافة المقطوعة من نقطة البداية حسب نوع السحب؛ كل تغيّر في رقم النقطة = هزة وحدة
                                     val travel = when (mode) {
                                         1 -> kotlin.math.sqrt(tot.x * tot.x + tot.y.coerceAtMost(0f) * tot.y.coerceAtMost(0f))
@@ -2335,6 +2417,12 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                                     if (idx != brIdx) { brIdx = idx; buzz(hapticView, false) }
                                 }
                                 lastPos = ch.position
+                            }
+                            if (mode >= 4) {
+                                // الإفلات: التقديم/التأخير يتنفذ هنا، والمؤشر يختفي بعد لحظة
+                                if (mode == 6 && seekTarget >= 0L) player?.seekTo(seekTarget)
+                                hudHold = false; hudTick++
+                                return@awaitEachGesture
                             }
                             if (mode == 1 || mode == 2) {
                                 val v = vt.calculateVelocity()
@@ -2572,6 +2660,25 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                             Modifier.align(if (skipDir > 0) Alignment.CenterEnd else Alignment.CenterStart).padding(horizontal = 36.dp)
                                 .background(Color.Black.copy(0.55f), RoundedCornerShape(20.dp)).padding(horizontal = 16.dp, vertical = 10.dp)
                         ) { Text(if (skipDir > 0) "+10" else "-10", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold) }
+                        // مؤشر الصوت/السطوع/التقديم أثناء الإيماءات الجانبية
+                        if (hud != 0) {
+                            if (hud == 3) Box(
+                                Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 72.dp)
+                                    .background(Color.Black.copy(0.6f), RoundedCornerShape(18.dp)).padding(horizontal = 18.dp, vertical = 10.dp)
+                            ) { Text(hudText, color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.SemiBold) }
+                            else Column(
+                                Modifier.align(if (hud == 1) Alignment.CenterEnd else Alignment.CenterStart).padding(horizontal = 22.dp)
+                                    .background(Color.Black.copy(0.6f), RoundedCornerShape(26.dp)).padding(horizontal = 12.dp, vertical = 14.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(if (hud == 1) "🔊" else "☀", fontSize = 18.sp, color = Color.White)
+                                Box(Modifier.width(6.dp).height(130.dp).background(Color.White.copy(0.28f), RoundedCornerShape(3.dp)),
+                                    contentAlignment = Alignment.BottomCenter) {
+                                    Box(Modifier.fillMaxWidth().fillMaxHeight(hudLevel.coerceIn(0f, 1f)).background(Color.White, RoundedCornerShape(3.dp)))
+                                }
+                                Text("${(hudLevel * 100).toInt()}", color = Color.White, fontSize = 12.sp)
+                            }
+                        }
                         // بانر: الفيديو مشغّل قبل أكثر من دقيقة، نسأل لو يبي يبدأ من البداية
                         if (resumeAsk > 0L && !full) {
                             val rbPad by animateDpAsState(if (ui) 150.dp else 28.dp, tween(260), label = "rb")
@@ -2605,15 +2712,32 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                             ) {
                                 GlassIcon(IBack, Modifier.width(64.dp)) { close() }
                                 Text(cleanName(c.name), color = Color.White, maxLines = 1, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                                // زر نسبة الشاشة: يبدّل بين 16:9 و 4:3
-                                val arNat = if (vAr > 0f) vAr else 16f / 9f
-                                val nat169 = arNat >= 1.55f
-                                val label = if (arForced != nat169) "16:9" else "4:3"
-                                GlassButton(label, Modifier.width(64.dp)) {
-                                    uiTick++; buzz(hapticView, false)
-                                    arForced = !arForced
-                                    store.setArFlip(c.url, arForced)
-                                    zoom = 1f; panX = 0f; panY = 0f
+                                // ثلاث نقاط: الإيماءات (خيار وحد)، السرعة، وضع الخروج (PiP / صوت بالخلفية)، نسبة الشاشة
+                                Box {
+                                    GlassButton("⋮", Modifier.width(64.dp)) { uiTick++; buzz(hapticView, false); menuPage = 0; menu = true }
+                                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                                        if (menuPage == 0) {
+                                            DropdownMenuItem(
+                                                text = { Text(if (swipeOn) "✓  إيماءات التقديم والصوت والسطوع" else "إيماءات التقديم والصوت والسطوع (معطّلة)") },
+                                                onClick = { swipeOn = !swipeOn; store.setSwipeGestures(swipeOn); menu = false })
+                                            DropdownMenuItem(text = { Text("السرعة: ${fmtSpeed(speed)}") }, onClick = { menuPage = 1 })
+                                            DropdownMenuItem(
+                                                text = { Text(if (pipMode) "عند الخروج: صورة مصغّرة (PiP)" else "عند الخروج: صوت بالخلفية") },
+                                                onClick = { pipMode = !pipMode; store.setPipMode(pipMode); menu = false })
+                                            DropdownMenuItem(text = { Text("تبديل نسبة الشاشة (16:9 / 4:3)") }, onClick = {
+                                                uiTick++; buzz(hapticView, false)
+                                                arForced = !arForced
+                                                store.setArFlip(c.url, arForced)
+                                                zoom = 1f; panX = 0f; panY = 0f
+                                                menu = false
+                                            })
+                                        } else {
+                                            listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f).forEach { sp ->
+                                                DropdownMenuItem(text = { Text(if (sp == speed) "✓  ${fmtSpeed(sp)}" else fmtSpeed(sp)) },
+                                                    onClick = { speed = sp; player?.setPlaybackSpeed(sp); menu = false })
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             Column(
@@ -2622,36 +2746,15 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                             player?.let { GlassSeek(it, { uiTick++ }) }
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                GlassIcon(IRew, Modifier.weight(1f)) {
-                                    uiTick++
-                                    player?.let { it.seekTo((it.currentPosition - 10_000L).coerceAtLeast(0L)) }
-                                }
-                                GlassIcon(if (playing) IPause else IPlay, Modifier.weight(1f)) {
+                            }
+                            // زر التشغيل/الإيقاف: دائري شفاف بمنتصف الشاشة
+                            Box(
+                                Modifier.align(Alignment.Center).size(84.dp).liveGlass(42.dp) {
                                     uiTick++
                                     player?.let { if (it.isPlaying) it.pause() else it.play() }
-                                }
-                                GlassIcon(IFwd, Modifier.weight(1f)) {
-                                    uiTick++
-                                    player?.let {
-                                        val d = it.duration; val t = it.currentPosition + 10_000L
-                                        it.seekTo(if (d > 0L) minOf(t, d) else t)
-                                    }
-                                }
-                                Box(Modifier.weight(1f)) {
-                                    GlassButton(fmtSpeed(speed), Modifier.fillMaxWidth()) { menu = true }
-                                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                                        listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f).forEach { s ->
-                                            DropdownMenuItem(text = { Text(if (s == speed) "✓  ${fmtSpeed(s)}" else fmtSpeed(s)) },
-                                                onClick = { speed = s; player?.setPlaybackSpeed(s); menu = false })
-                                        }
-                                    }
-                                }
-                                GlassIcon(if (pipMode) IPip else IHead, Modifier.weight(1f)) {
-                                    uiTick++; pipMode = !pipMode; store.setPipMode(pipMode)
-                                }
-                            }
-                            }
+                                },
+                                contentAlignment = Alignment.Center
+                            ) { Icon(if (playing) IPause else IPlay, contentDescription = null, tint = Color.White, modifier = Modifier.size(38.dp)) }
                         }
 
                     }
