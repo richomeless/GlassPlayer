@@ -1690,23 +1690,17 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
             if (t >= 0) mainTab = t
         }
     }
-    // الشريط العلوي يتحرك مع السحب حي: الشريحة المحددة (أو الوسط بين شريحتين أثناء السحب) تبقى دائماً بنص الشاشة
+    // الشريط العلوي ما يتحرك مع إصبعك: بعد ما تستقر الصفحة (تنتهي عملية الانتقال) يتحرك بنعومة والشريحة المحددة بنص الشاشة
     LaunchedEffect(Unit) {
+        var first = true
         snapshotFlow {
-            val n = pager.pageCount
-            val pos = pagePos().coerceIn(0f, (n - 1).toFloat())
-            val k0 = kotlin.math.floor(pos).toInt().coerceIn(0, n - 1)
-            val k1 = (k0 + 1).coerceAtMost(n - 1)
-            val ca = chipPos[k0]; val cb = chipPos[k1]
-            if (ca == null || cb == null || chipRowW == 0) null
-            else {
-                val f = pos - k0
-                (ca.x + ca.y / 2f) * (1f - f) + (cb.x + cb.y / 2f) * f - chipRowW / 2f
-            }
-        }.collect { target ->
+            val c = chipPos[pager.settledPage]
+            if (c == null || chipRowW == 0) null else c.x + c.y / 2f - chipRowW / 2f
+        }.collectLatest { target ->
             if (target != null) {
-                val d = target - chipScroll.value
-                if (kotlin.math.abs(d) >= 0.5f) chipScroll.dispatchRawDelta(d)
+                val t = target.toInt().coerceAtLeast(0)
+                if (first) { first = false; chipScroll.scrollTo(t) }
+                else chipScroll.animateScrollTo(t, tween(320, easing = FastOutSlowInEasing))
             }
         }
     }
