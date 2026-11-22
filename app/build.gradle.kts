@@ -12,8 +12,12 @@ android {
         applicationId = "com.glass.player"
         minSdk = 31
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
+        // اللغات اللي نحتاجها بس (مكتبات كومبوز وميديا تجيب عشرات اللغات)
+        resourceConfigurations += listOf("ar", "en")
+        // الجوالات الحديثة كلها arm64: نشيل مكتبات المعمارات الثانية
+        ndk { abiFilters += "arm64-v8a" }
     }
 
     // مفتاح ثابت داخل المشروع: كل نسخة تنبني تتوقّع بنفس التوقيع، فالتحديث يركب فوق القديمة بدون ما تحذف التطبيق
@@ -29,7 +33,9 @@ android {
     buildTypes {
         debug { signingConfig = signingConfigs.getByName("glass") }
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.getByName("glass")
         }
     }
@@ -40,6 +46,14 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
+    packaging {
+        resources {
+            excludes += setOf(
+                "/META-INF/{AL2.0,LGPL2.1}", "/META-INF/*.version", "/META-INF/LICENSE*", "/META-INF/NOTICE*",
+                "DebugProbesKt.bin", "kotlin-tooling-metadata.json"
+            )
+        }
+    }
 }
 
 dependencies {

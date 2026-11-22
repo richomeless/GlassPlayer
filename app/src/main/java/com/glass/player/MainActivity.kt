@@ -127,6 +127,7 @@ import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
@@ -1224,8 +1225,15 @@ fun GlassSeek(player: Player, onTouch: () -> Unit, modifier: Modifier = Modifier
     }
 }
 
-// صورة مصغّرة للفيديو من مكتبة الجوال (تُحفظ بالذاكرة عشان التمرير يبقى سلس)
-private val thumbCache = android.util.LruCache<String, ImageBitmap>(150)
+// صورة مصغّرة للفيديو من مكتبة الجوال.
+// الكاش محدود بالحجم الفعلي (24MB) مو بالعدد، والتحميل على خيطين بس عشان التمرير السريع ما يخنق المعالج،
+// وفي تأخير بسيط قبل التحميل: لو البطاقة طلعت من الشاشة قبله ينلغي التحميل بالكامل
+private val thumbCache = object : android.util.LruCache<String, ImageBitmap>(24 * 1024 * 1024) {
+    override fun sizeOf(key: String, value: ImageBitmap): Int = (value.width * value.height * 4).coerceAtLeast(1)
+}
+
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+private val thumbIO = Dispatchers.IO.limitedParallelism(2)
 
 @Composable
 fun rememberThumb(uri: String): ImageBitmap? {
@@ -1233,11 +1241,21 @@ fun rememberThumb(uri: String): ImageBitmap? {
     var bmp by remember(uri) { mutableStateOf<ImageBitmap?>(thumbCache.get(uri)) }
     LaunchedEffect(uri) {
         if (bmp == null) {
-            bmp = withContext(Dispatchers.IO) {
+            delay(90)
+            val signal = android.os.CancellationSignal()
+            val job = async(thumbIO) {
                 try {
-                    ctx.contentResolver.loadThumbnail(android.net.Uri.parse(uri), android.util.Size(420, 236), null)
-                        .asImageBitmap().also { thumbCache.put(uri, it) }
+                    val raw = ctx.contentResolver.loadThumbnail(android.net.Uri.parse(uri), android.util.Size(360, 203), signal)
+                    // نحوّلها لصورة على كرت الشاشة مرة وحدة: أخف على الذاكرة والرسم أسرع
+                    val hw = try { raw.copy(android.graphics.Bitmap.Config.HARDWARE, false) } catch (_: Throwable) { null }
+                    val img = if (hw != null) { raw.recycle(); hw } else raw
+                    img.asImageBitmap().also { thumbCache.put(uri, it) }
                 } catch (_: Throwable) { null }
+            }
+            try {
+                bmp = job.await()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                signal.cancel(); job.cancel(); throw e
             }
         }
     }

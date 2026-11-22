@@ -41,17 +41,17 @@ jobs:
           fi
 
       - name: Build
-        run: gradle assembleDebug --stacktrace
+        run: gradle assembleRelease --stacktrace
 
       - uses: actions/upload-artifact@v4
         with:
           name: GlassPlayer
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: app/build/outputs/apk/release/app-release.apk
 
       - name: Publish latest release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cp app/build/outputs/apk/debug/app-debug.apk GlassPlayer.apk
+          cp app/build/outputs/apk/release/app-release.apk GlassPlayer.apk
           gh release delete latest --yes --cleanup-tag || true
           gh release create latest GlassPlayer.apk --title "Glass Player (latest)" --notes "Build #${{ github.run_number }}" --target "${{ github.sha }}"
