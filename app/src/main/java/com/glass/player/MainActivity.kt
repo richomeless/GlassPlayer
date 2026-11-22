@@ -1652,6 +1652,8 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
     // الأزرار تختفي تلقائياً بعد 5 ثواني من ظهورها (يتجدد العد عند أي لمسة على الأزرار)
     var uiTick by remember { mutableStateOf(0) }
     var resumeAsk by remember { mutableStateOf(0L) }   // موضع المتابعة (ms) لو الفيديو مشغّل قبل أكثر من دقيقة، وإلا 0
+    var listOff by remember { mutableFloatStateOf(0f) }   // إزاحة القائمة أثناء السحب بين القوائم (px)
+    var listBusy by remember { mutableStateOf(false) }
     var skipDir by remember { mutableIntStateOf(0) }    // أثر التقديم/الإرجاع: 1 يمين، -1 يسار
     var skipTick by remember { mutableIntStateOf(0) }
     LaunchedEffect(skipTick) { if (skipTick > 0) { delay(650); skipDir = 0 } }
@@ -1995,7 +1997,7 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                             // وأي سحب مائل (حتى لو مال الإصبع) يعتبر تمرير عمودي للقائمة
                             awaitEachGesture {
                                 val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-                                if (pager.isScrollInProgress) return@awaitEachGesture
+                                if (pager.isScrollInProgress || listBusy) return@awaitEachGesture
                                 val vt = VelocityTracker()
                                 vt.addPointerInputChange(down)
                                 var decided = false
@@ -2024,15 +2026,33 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                                         horiz = dirOk && hz
                                         if (!horiz && listSwipe == 0) break   // عمودي أو مائل: القائمة تتمرر عادي
                                     }
-                                    if (listSwipe != 0) { ch.consume(); continue }
+                                    if (listSwipe != 0) { listOff = total.x; ch.consume(); continue }   // القائمة تلحق إصبعك
                                     pager.dispatchRawDelta(-(ch.position.x - last.x))
                                     last = ch.position
                                     ch.consume()
                                 }
                                 if (listSwipe != 0) {
                                     val vxl = vt.calculateVelocity().x
-                                    val go = if (listSwipe == 1) (total.x < -80.dp.toPx() || vxl < -700f) else (total.x > 80.dp.toPx() || vxl > 700f)
-                                    if (go) { buzz(hapticView, false); tab = mainTab + listSwipe }
+                                    val ls = listSwipe
+                                    val go = if (ls == 1) (total.x < -80.dp.toPx() || vxl < -700f) else (total.x > 80.dp.toPx() || vxl > 700f)
+                                    val wpx = size.width.toFloat()
+                                    listBusy = true
+                                    scope.launch {
+                                        if (go) {
+                                            buzz(hapticView, false)
+                                            // القائمة تكمل طلوعها بنفس اتجاه إصبعك، تتبدل، والجديدة تدخل من الجهة الثانية
+                                            val out = -ls * wpx
+                                            androidx.compose.animation.core.animate(listOff, out, animationSpec = tween(150, easing = FastOutLinearInEasing)) { v, _ -> listOff = v }
+                                            tab = mainTab + ls
+                                            listOff = -out
+                                            delay(70)
+                                            androidx.compose.animation.core.animate(listOff, 0f, animationSpec = tween(300, easing = FastOutSlowInEasing)) { v, _ -> listOff = v }
+                                        } else {
+                                            androidx.compose.animation.core.animate(listOff, 0f, animationSpec = tween(220, easing = FastOutSlowInEasing)) { v, _ -> listOff = v }
+                                        }
+                                        listOff = 0f
+                                        listBusy = false
+                                    }
                                 }
                                 if (horiz) {
                                     val vx = vt.calculateVelocity().x
@@ -2040,6 +2060,9 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                                     scope.launch { pager.animateScrollToPage(target) }
                                 }
                             }
+                        }.graphicsLayer {
+                            translationX = listOff
+                            alpha = 1f - (kotlin.math.abs(listOff) / size.width.coerceAtLeast(1f)).coerceIn(0f, 1f) * 0.7f
                         }, userScrollEnabled = false, beyondViewportPageCount = 1) { page ->
                         val isFavPage = page == 0
                         val smode = sorts[if (isFavPage) "fav" else "f:" + (lists.getOrNull(mainTab) ?: "")] ?: 0
