@@ -25,6 +25,7 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.exponentialDecay
@@ -1650,6 +1651,11 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
     var full by remember { mutableStateOf(false) }
     // الأزرار تختفي تلقائياً بعد 5 ثواني من ظهورها (يتجدد العد عند أي لمسة على الأزرار)
     var uiTick by remember { mutableStateOf(0) }
+    var resumeAsk by remember { mutableStateOf(0L) }   // موضع المتابعة (ms) لو الفيديو مشغّل قبل أكثر من دقيقة، وإلا 0
+    var skipDir by remember { mutableIntStateOf(0) }    // أثر التقديم/الإرجاع: 1 يمين، -1 يسار
+    var skipTick by remember { mutableIntStateOf(0) }
+    LaunchedEffect(skipTick) { if (skipTick > 0) { delay(650); skipDir = 0 } }
+    LaunchedEffect(resumeAsk) { if (resumeAsk > 0L) { delay(9000); resumeAsk = 0L } }
     LaunchedEffect(cur, ui, menu, uiTick) {
         if (cur != null && ui && !menu) {
             snapshotFlow { reveal.value }.first { it >= 0.99f }
@@ -1773,6 +1779,8 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
         error = null; qSel = null; vh = 0; ui = true; zoom = 1f; panX = 0f; panY = 0f; speed = 1f
         arForced = store.arFlip(c.url)
         store.bumpCount(c.url)
+        val savedPos = store.pos(c.url)
+        resumeAsk = if (savedPos > 60_000L) savedPos else 0L
         val dm = ctx.resources.displayMetrics
         val cx = dm.widthPixels / 2f; val cy = dm.heightPixels / 2f
         origin = if (from != null && from.width > 0f) from else Rect(cx - 80f, cy - 80f, cx + 80f, cy + 80f)
@@ -1888,7 +1896,8 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
         }
     }
     LaunchedEffect(player) {
-        player?.let { it.volume = ctx.getSharedPreferences("glass_volume", Context.MODE_PRIVATE).getFloat("v", 1f) }
+        // ما في سلايدر صوت بالمشغل: الصوت من أزرار الجوال، فنخلي مستوى المشغل كامل
+        player?.let { it.volume = 1f }
     }
     // فيديو جاي من تطبيق ثاني أو من منتقي الملفات: ننتظر لين المشغّل يتصل ثم نشغّله
     LaunchedEffect(extUri, player) {
@@ -1981,7 +1990,7 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                         drawRect(Brush.radialGradient(listOf(pal.blob2, Color.Transparent), Offset(size.width * 0.95f, size.height * 0.95f), size.width * 0.9f))
                     })
                     HorizontalPager(state = pager, modifier = Modifier.fillMaxSize()
-                        .pointerInput(Unit) {
+                        .pointerInput(lists.size) {
                             // التنقل بين القائمة والمفضلة: نتحكم فيه بأنفسنا. ما يبدأ إلا لو السحب أفقي بوضوح،
                             // وأي سحب مائل (حتى لو مال الإصبع) يعتبر تمرير عمودي للقائمة
                             awaitEachGesture {
@@ -1991,6 +2000,8 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                                 vt.addPointerInputChange(down)
                                 var decided = false
                                 var horiz = false
+                                var listSwipe = 0   // 1 = القائمة التالية (سحب لليسار)، -1 = السابقة (سحب لليمين)
+                                var total = Offset.Zero
                                 var last = down.position
                                 while (true) {
                                     val ev = awaitPointerEvent(PointerEventPass.Initial)
@@ -1998,17 +2009,30 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                                     if (!ch.pressed) break
                                     vt.addPointerInputChange(ch)
                                     val tot = ch.position - down.position
+                                    total = tot
                                     if (!decided) {
                                         if (tot.getDistance() <= viewConfiguration.touchSlop) continue
                                         decided = true
                                         val page = pager.currentPage
-                                        val dirOk = (page == 1 && tot.x > 0f) || (page == 0 && tot.x < 0f)
-                                        horiz = dirOk && kotlin.math.abs(tot.x) > kotlin.math.abs(tot.y) * 2.2f
-                                        if (!horiz) break   // عمودي أو مائل: القائمة تتمرر عادي
+                                        val hz = kotlin.math.abs(tot.x) > kotlin.math.abs(tot.y) * 2.2f
+                                        // في القوائم: سحب لليسار = القائمة التالية، ولليمين = السابقة (ومن أول قائمة للمفضلة)
+                                        if (hz && page == 1) {
+                                            if (tot.x < 0f && mainTab < lists.size - 1) listSwipe = 1
+                                            else if (tot.x > 0f && mainTab > 0) listSwipe = -1
+                                        }
+                                        val dirOk = (page == 1 && tot.x > 0f && mainTab == 0) || (page == 0 && tot.x < 0f)
+                                        horiz = dirOk && hz
+                                        if (!horiz && listSwipe == 0) break   // عمودي أو مائل: القائمة تتمرر عادي
                                     }
+                                    if (listSwipe != 0) { ch.consume(); continue }
                                     pager.dispatchRawDelta(-(ch.position.x - last.x))
                                     last = ch.position
                                     ch.consume()
+                                }
+                                if (listSwipe != 0) {
+                                    val vxl = vt.calculateVelocity().x
+                                    val go = if (listSwipe == 1) (total.x < -80.dp.toPx() || vxl < -700f) else (total.x > 80.dp.toPx() || vxl > 700f)
+                                    if (go) { buzz(hapticView, false); tab = mainTab + listSwipe }
                                 }
                                 if (horiz) {
                                     val vx = vt.calculateVelocity().x
@@ -2428,7 +2452,18 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                             if (dragged && zoom < 1.05f) { zoom = 1f; panX = 0f; panY = 0f }
                             if (!dragged) {
                                 val z0 = zoom; val x0 = panX; val y0 = panY
-                                if (zoom > 1.02f) {
+                                // ضغطتين بأقصى اليمين: +10 ثواني، بأقصى اليسار: -10 ثواني (الأطراف بحسب اتجاه الصورة)
+                                val rotNow = full && size.height > size.width
+                                val fx = if (rotNow) second.position.y / sh else second.position.x / sw
+                                val skip = if (fx > 0.75f) 1 else if (fx < 0.25f) -1 else 0
+                                if (skip != 0) {
+                                    player?.let { pl ->
+                                        val d = pl.duration; val t = pl.currentPosition + skip * 10_000L
+                                        pl.seekTo(if (d > 0L) t.coerceIn(0L, d) else t.coerceAtLeast(0L))
+                                    }
+                                    skipDir = skip; skipTick++
+                                    buzz(hapticView, false)
+                                } else if (zoom > 1.02f) {
                                     // ضغطتين وهو مقرّب: يرجع لحجمه بارتداد خفيف مع هزة
                                     buzz(hapticView, false)
                                     scope.launch {
@@ -2440,18 +2475,8 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                                         zoom = 1f; panX = 0f; panY = 0f
                                     }
                                 } else {
-                                    // ضغطتين: تقريب 1.5x حول مكان الإصبع
-                                    val p0 = Offset(panX, panY)
-                                    scope.launch {
-                                        val t = Animatable(0f)
-                                        t.animateTo(1f, tween(200, easing = FastOutSlowInEasing)) {
-                                            val zv = 1f + 0.5f * value
-                                            val np = zoomAt(z0, p0, zv, anchor, sw, sh)
-                                            zoom = zv; panX = np.x; panY = np.y
-                                        }
-                                        val np = zoomAt(z0, p0, 1.5f, anchor, sw, sh)
-                                        zoom = 1.5f; panX = np.x; panY = np.y
-                                    }
+                                    // ما عاد في تكبير بالضغطتين: ضغطتين بالنص تعامل كضغطة وحدة
+                                    ui = !ui
                                 }
                             }
                         }
@@ -2503,6 +2528,31 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                             Text(it, color = Color(0xFFFF6B6B), fontSize = 13.sp, textAlign = TextAlign.Center,
                                 modifier = Modifier.align(Alignment.Center).padding(24.dp))
                         }
+                        // أثر التقديم/الإرجاع بالضغطتين
+                        if (skipDir != 0) Box(
+                            Modifier.align(if (skipDir > 0) Alignment.CenterEnd else Alignment.CenterStart).padding(horizontal = 36.dp)
+                                .background(Color.Black.copy(0.55f), RoundedCornerShape(20.dp)).padding(horizontal = 16.dp, vertical = 10.dp)
+                        ) { Text(if (skipDir > 0) "+10" else "-10", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold) }
+                        // بانر: الفيديو مشغّل قبل أكثر من دقيقة، نسأل لو يبي يبدأ من البداية
+                        if (resumeAsk > 0L && !full) {
+                            val rbPad by animateDpAsState(if (ui) 150.dp else 28.dp, tween(260), label = "rb")
+                            Row(
+                                Modifier.align(Alignment.BottomCenter).navigationBarsPadding()
+                                    .padding(start = 16.dp, end = 16.dp, bottom = rbPad).fillMaxWidth()
+                                    .background(Color.Black.copy(0.62f), RoundedCornerShape(22.dp))
+                                    .padding(start = 16.dp, top = 8.dp, bottom = 8.dp, end = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text("كمّلنا من ${fmtDur(resumeAsk)}", color = Color.White, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                                Box(Modifier.height(40.dp).liveGlass(14.dp) { player?.seekTo(0L); resumeAsk = 0L; uiTick++ }.padding(horizontal = 14.dp),
+                                    contentAlignment = Alignment.Center) {
+                                    Text("من البداية", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                                }
+                                Box(Modifier.size(40.dp).liveGlass(14.dp) { resumeAsk = 0L }, contentAlignment = Alignment.Center) {
+                                    Text("✕", color = Color.White, fontSize = 14.sp)
+                                }
+                            }
+                        }
                         if (uiAlpha > 0.01f) Box(Modifier.fillMaxSize().graphicsLayer {
                             val fp = fpNow()
                     val steady = kotlin.math.max((1f - fp * 4f).coerceIn(0f, 1f), ((fp - 0.75f) * 4f).coerceIn(0f, 1f))
@@ -2533,7 +2583,6 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                             player?.let { GlassSeek(it, { uiTick++ }) }
-                            player?.let { GlassVolume(it, { uiTick++ }) }
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 GlassIcon(IRew, Modifier.weight(1f)) {
                                     uiTick++
