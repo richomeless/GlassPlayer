@@ -1282,7 +1282,6 @@ fun GlassIcon(icon: ImageVector, modifier: Modifier = Modifier, tint: Color = Co
     ) { Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(26.dp)) }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
 // يوسّع العنصر لحافتي الشاشة (يتجاوز هامش الأب الأفقي) عشان ما ينقص طرفه عند الحواف
 fun Modifier.bleed(extra: androidx.compose.ui.unit.Dp): Modifier = this.layout { m, c ->
     val e = extra.roundToPx()
@@ -1291,6 +1290,7 @@ fun Modifier.bleed(extra: androidx.compose.ui.unit.Dp): Modifier = this.layout {
     layout(c.maxWidth, p.height) { p.place(-e, 0) }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun Chip(text: String, sel: () -> Float, modifier: Modifier = Modifier, onLong: () -> Unit = {}, onClick: () -> Unit) {
     // نفس الارتفاع ونفس الشكل لكل الأزرار، والتحديد تظليل حي يتبع السحب (يُقرأ وقت الرسم بس)
