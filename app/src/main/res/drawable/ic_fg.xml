@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- البطاقة الزجاجية ومثلث التشغيل بدرجات من لون الجهاز (Material You) -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path
+        android:pathData="M36,26 h36 a8,8 0 0 1 8,8 v40 a8,8 0 0 1 -8,8 h-36 a8,8 0 0 1 -8,-8 v-40 a8,8 0 0 1 8,-8 z"
+        android:fillColor="@android:color/system_accent1_200" android:fillAlpha="0.55"
+        android:strokeColor="@android:color/system_accent1_300" android:strokeWidth="0.8" />
+    <path android:pathData="M45,40 L45,68 L69,54 Z"
+        android:fillColor="@android:color/system_accent1_600"
+        android:strokeColor="@android:color/system_accent1_100" android:strokeWidth="0.8" android:strokeLineJoin="round" />
+    <path android:pathData="M45,40 L69,54 L57,54 Z"
+        android:fillColor="@android:color/system_accent1_500" />
+    <path android:pathData="M72,33 L73.1,36.4 L76.5,37.5 L73.1,38.6 L72,42 L70.9,38.6 L67.5,37.5 L70.9,36.4 Z"
+        android:fillColor="@android:color/system_accent1_700" />
+</vector>

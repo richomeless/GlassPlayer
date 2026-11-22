@@ -1,0 +1,57 @@
+name: Build Glass Player
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.10.2
+
+      # خطوط Glass IPTV (Instrument Sans + Tektur): لو ما حطيتها بنفسك في app/src/main/res/font
+      # نحاول نسحبها من مستودع GlassIPTV (يشتغل لو المستودع عام). وبدونها التطبيق يستخدم خط النظام.
+      - name: Fonts (optional)
+        env:
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          if [ ! -d app/src/main/res/font ]; then
+            git clone --depth 1 https://github.com/richomeless/GlassIPTV.git /tmp/giptv || true
+            if [ -d /tmp/giptv/app/src/main/res/font ]; then
+              mkdir -p app/src/main/res/font
+              cp /tmp/giptv/app/src/main/res/font/* app/src/main/res/font/
+              echo "fonts copied"
+            else
+              echo "no fonts found, using system font"
+            fi
+          fi
+
+      - name: Build
+        run: gradle assembleDebug --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GlassPlayer
+          path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Publish latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk GlassPlayer.apk
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest GlassPlayer.apk --title "Glass Player (latest)" --notes "Build #${{ github.run_number }}" --target "${{ github.sha }}"
