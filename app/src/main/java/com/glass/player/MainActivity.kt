@@ -215,7 +215,11 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= 33) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         val token = SessionToken(this, ComponentName(this, PlaybackService::class.java))
         val f = MediaController.Builder(this, token).buildAsync()
-        f.addListener({ controller.value = f.get() }, MoreExecutors.directExecutor())
+        f.addListener({
+            controller.value = f.get()
+            // لو الشاشة انفتحت من جديد قبل ما يتصل المتحكم، onStart ما قدر يرجّع الفيديو: نرجّعه هنا
+            if (lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)) setVideo(true)
+        }, MoreExecutors.directExecutor())
         future = f
         val themeStore = Store(applicationContext)
         themeMode.intValue = themeStore.themeMode()
@@ -1781,6 +1785,11 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
             val md = MediaMetadata.Builder().setTitle(cleanName(c.name)).build()
             val item = MediaItem.Builder().setUri(c.url).setMediaMetadata(md).build()
             // نكمل من آخر موضع وقفت عنده
+            // احتياط: لو مسار الفيديو كان مطفي (وضع الصوت فقط بالخلفية) نشغّله قبل التشغيل، وإلا يطلع صوت بدون صورة
+            if (p.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_VIDEO)) {
+                p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                    .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false).build()
+            }
             p.setMediaItem(item, store.pos(c.url))
             p.setPlaybackSpeed(1f)
             p.prepare(); p.play()
