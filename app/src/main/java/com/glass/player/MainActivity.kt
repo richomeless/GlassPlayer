@@ -76,6 +76,8 @@ import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Density
@@ -1612,7 +1614,12 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
     var vAr by remember { mutableStateOf(0f) }
     var pvRef by remember { mutableStateOf<PlayerView?>(null) }
     val ctlRot by remember { derivedStateOf { fpNow() > 0.5f } }
-    val chipX = remember { mutableStateMapOf<Int, Float>() }
+    // موضع كل شريحة داخل صف الشرائح (x = حافتها اليسرى، y = عرضها). مفتاحها رقم الصفحة: 0 المفضلة، i+1 القائمة i
+    val chipPos = remember { mutableStateMapOf<Int, Offset>() }
+    val chipScroll = rememberScrollState()
+    var chipRowW by remember { mutableStateOf(0) }
+    val listChannels = remember { mutableStateMapOf<String, List<Channel>>() }
+    val listGrids = remember { mutableMapOf<String, LazyGridState>() }
     var dotLeft by remember { mutableStateOf(0f) }
     val uiAlpha by animateFloatAsState(
         targetValue = if (ui) 1f else 0f,
@@ -1652,8 +1659,6 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
     // الأزرار تختفي تلقائياً بعد 5 ثواني من ظهورها (يتجدد العد عند أي لمسة على الأزرار)
     var uiTick by remember { mutableStateOf(0) }
     var resumeAsk by remember { mutableStateOf(0L) }   // موضع المتابعة (ms) لو الفيديو مشغّل قبل أكثر من دقيقة، وإلا 0
-    var listOff by remember { mutableFloatStateOf(0f) }   // إزاحة القائمة أثناء السحب بين القوائم (px)
-    var listBusy by remember { mutableStateOf(false) }
     var skipDir by remember { mutableIntStateOf(0) }    // أثر التقديم/الإرجاع: 1 يمين، -1 يسار
     var skipTick by remember { mutableIntStateOf(0) }
     LaunchedEffect(skipTick) { if (skipTick > 0) { delay(650); skipDir = 0 } }
@@ -1666,27 +1671,43 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
         }
     }
     // حالة الشبكة هنا فوق عشان ترجع لنفس المكان بعد الخروج من القناة
-    val gridState = rememberLazyGridState()
     val favState = rememberLazyGridState()
-    ScrollTicks(gridState, hapticView)
     ScrollTicks(favState, hapticView)
-    val pager = rememberPagerState(initialPage = 1, pageCount = { 2 })
+    fun gridFor(name: String) = listGrids.getOrPut(name) { LazyGridState() }
+    // الصفحة 0 = المفضلة، والصفحة i+1 = القائمة i (كل قائمة صفحة حقيقية، والسحب بينها حي)
+    val pager = rememberPagerState(initialPage = 1, pageCount = { 1 + lists.size })
     var mainTab by remember { mutableStateOf(0) }
-    var lastMainTab by remember { mutableStateOf(0) }
-    // الصفحة 0 = القائمة الرئيسية، الصفحة 1 = المفضلة، والسحب بينهم حي
     LaunchedEffect(tab) {
-        if (tab >= 0) {
-            mainTab = tab
-            if (tab != lastMainTab) { lastMainTab = tab; gridState.scrollToItem(0) }
-        }
-        val target = if (tab == -1) 0 else 1
+        if (tab >= 0) mainTab = tab
+        val target = tab + 1
         if (pager.currentPage != target) pager.animateScrollToPage(target)
     }
-    fun pageProg() = (pager.currentPage + pager.currentPageOffsetFraction).coerceIn(0f, 1f)
+    fun pagePos() = pager.currentPage + pager.currentPageOffsetFraction
     LaunchedEffect(pager) {
         snapshotFlow { pager.settledPage }.collect { pg ->
-            if (pg == 0 && tab != -1) tab = -1
-            else if (pg == 1 && tab == -1) tab = mainTab
+            val t = pg - 1
+            if (tab != t) tab = t
+            if (t >= 0) mainTab = t
+        }
+    }
+    // الشريط العلوي يتحرك مع السحب حي: الشريحة المحددة (أو الوسط بين شريحتين أثناء السحب) تبقى دائماً بنص الشاشة
+    LaunchedEffect(Unit) {
+        snapshotFlow {
+            val n = pager.pageCount
+            val pos = pagePos().coerceIn(0f, (n - 1).toFloat())
+            val k0 = kotlin.math.floor(pos).toInt().coerceIn(0, n - 1)
+            val k1 = (k0 + 1).coerceAtMost(n - 1)
+            val ca = chipPos[k0]; val cb = chipPos[k1]
+            if (ca == null || cb == null || chipRowW == 0) null
+            else {
+                val f = pos - k0
+                (ca.x + ca.y / 2f) * (1f - f) + (cb.x + cb.y / 2f) * f - chipRowW / 2f
+            }
+        }.collect { target ->
+            if (target != null) {
+                val d = target - chipScroll.value
+                if (kotlin.math.abs(d) >= 0.5f) chipScroll.dispatchRawDelta(d)
+            }
         }
     }
 
@@ -1720,11 +1741,16 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
     }
 
     LaunchedEffect(hasPerm) { if (hasPerm) folders = withContext(Dispatchers.IO) { loadFolders(ctx) } }
-    LaunchedEffect(mainTab, folders, hasPerm) {
+    // كل قائمة تتحمّل لحالها: الحالية تتحدّث كل مرة، والجيران نحمّلهم لو ما انحمّلوا عشان السحب ما يشوف صفحة فاضية
+    LaunchedEffect(pager.settledPage, lists, hasPerm) {
         if (hasPerm) {
-            loading = true
-            channels = withContext(Dispatchers.IO) { loadVideos(ctx, lists.getOrElse(mainTab) { "" }) }
-            loading = false
+            val cp = pager.settledPage
+            for (pg in listOf(cp, cp - 1, cp + 1)) {
+                val name = lists.getOrNull(pg - 1) ?: continue
+                if (pg == cp || listChannels[name] == null) {
+                    listChannels[name] = withContext(Dispatchers.IO) { loadVideos(ctx, name) }
+                }
+            }
         }
     }
 
@@ -1991,19 +2017,23 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                         drawRect(Brush.radialGradient(listOf(pal.blob1, Color.Transparent), Offset(size.width * 0.1f, size.height * 0.05f), size.width * 0.9f))
                         drawRect(Brush.radialGradient(listOf(pal.blob2, Color.Transparent), Offset(size.width * 0.95f, size.height * 0.95f), size.width * 0.9f))
                     })
+                    val pagerJob = remember { arrayOfNulls<kotlinx.coroutines.Job>(1) }
                     HorizontalPager(state = pager, modifier = Modifier.fillMaxSize()
-                        .pointerInput(lists.size) {
-                            // التنقل بين القائمة والمفضلة: نتحكم فيه بأنفسنا. ما يبدأ إلا لو السحب أفقي بوضوح،
+                        .pointerInput(Unit) {
+                            // التنقل بين المفضلة والقوائم: نتحكم فيه بأنفسنا. ما يبدأ إلا لو السحب أفقي بوضوح،
                             // وأي سحب مائل (حتى لو مال الإصبع) يعتبر تمرير عمودي للقائمة
                             awaitEachGesture {
                                 val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-                                if (pager.isScrollInProgress || listBusy) return@awaitEachGesture
+                                // لو الصفحة تكمل انزلاقها من سحبة سابقة نمسكها بإصبعنا، وغير كذا (ضغط شريحة) نتجاهل
+                                var caught = false
+                                if (pager.isScrollInProgress) {
+                                    if (pagerJob[0]?.isActive == true) { pagerJob[0]?.cancel(); caught = true }
+                                    else return@awaitEachGesture
+                                }
                                 val vt = VelocityTracker()
                                 vt.addPointerInputChange(down)
                                 var decided = false
                                 var horiz = false
-                                var listSwipe = 0   // 1 = القائمة التالية (سحب لليسار)، -1 = السابقة (سحب لليمين)
-                                var total = Offset.Zero
                                 var last = down.position
                                 while (true) {
                                     val ev = awaitPointerEvent(PointerEventPass.Initial)
@@ -2011,67 +2041,41 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                                     if (!ch.pressed) break
                                     vt.addPointerInputChange(ch)
                                     val tot = ch.position - down.position
-                                    total = tot
                                     if (!decided) {
                                         if (tot.getDistance() <= viewConfiguration.touchSlop) continue
                                         decided = true
-                                        val page = pager.currentPage
-                                        val hz = kotlin.math.abs(tot.x) > kotlin.math.abs(tot.y) * 2.2f
-                                        // في القوائم: سحب لليسار = القائمة التالية، ولليمين = السابقة (ومن أول قائمة للمفضلة)
-                                        if (hz && page == 1) {
-                                            if (tot.x < 0f && mainTab < lists.size - 1) listSwipe = 1
-                                            else if (tot.x > 0f && mainTab > 0) listSwipe = -1
-                                        }
-                                        val dirOk = (page == 1 && tot.x > 0f && mainTab == 0) || (page == 0 && tot.x < 0f)
-                                        horiz = dirOk && hz
-                                        if (!horiz && listSwipe == 0) break   // عمودي أو مائل: القائمة تتمرر عادي
+                                        val cp = pager.currentPage
+                                        val dirOk = (tot.x > 0f && cp > 0) || (tot.x < 0f && cp < pager.pageCount - 1)
+                                        horiz = dirOk && kotlin.math.abs(tot.x) > kotlin.math.abs(tot.y) * 2.2f
+                                        if (!horiz) break   // عمودي أو مائل: القائمة تتمرر عادي
                                     }
-                                    if (listSwipe != 0) { listOff = total.x; ch.consume(); continue }   // القائمة تلحق إصبعك
                                     pager.dispatchRawDelta(-(ch.position.x - last.x))
                                     last = ch.position
                                     ch.consume()
                                 }
-                                if (listSwipe != 0) {
-                                    val vxl = vt.calculateVelocity().x
-                                    val ls = listSwipe
-                                    val go = if (ls == 1) (total.x < -80.dp.toPx() || vxl < -700f) else (total.x > 80.dp.toPx() || vxl > 700f)
-                                    val wpx = size.width.toFloat()
-                                    listBusy = true
-                                    scope.launch {
-                                        if (go) {
-                                            buzz(hapticView, false)
-                                            // القائمة تكمل طلوعها بنفس اتجاه إصبعك، تتبدل، والجديدة تدخل من الجهة الثانية
-                                            val out = -ls * wpx
-                                            androidx.compose.animation.core.animate(listOff, out, animationSpec = tween(150, easing = FastOutLinearInEasing)) { v, _ -> listOff = v }
-                                            tab = mainTab + ls
-                                            listOff = -out
-                                            delay(70)
-                                            androidx.compose.animation.core.animate(listOff, 0f, animationSpec = tween(300, easing = FastOutSlowInEasing)) { v, _ -> listOff = v }
-                                        } else {
-                                            androidx.compose.animation.core.animate(listOff, 0f, animationSpec = tween(220, easing = FastOutSlowInEasing)) { v, _ -> listOff = v }
-                                        }
-                                        listOff = 0f
-                                        listBusy = false
-                                    }
-                                }
                                 if (horiz) {
                                     val vx = vt.calculateVelocity().x
-                                    val target = if (vx > 700f) 0 else if (vx < -700f) 1 else pager.currentPage
-                                    scope.launch { pager.animateScrollToPage(target) }
+                                    val pos = pagePos()
+                                    val target = (if (vx > 700f) kotlin.math.floor(pos).toInt() else if (vx < -700f) kotlin.math.ceil(pos).toInt() else pager.currentPage)
+                                        .coerceIn(0, pager.pageCount - 1)
+                                    pagerJob[0] = scope.launch { pager.animateScrollToPage(target) }
+                                } else if (caught) {
+                                    pagerJob[0] = scope.launch { pager.animateScrollToPage(pager.currentPage) }
                                 }
                             }
-                        }.graphicsLayer {
-                            translationX = listOff
-                            alpha = 1f - (kotlin.math.abs(listOff) / size.width.coerceAtLeast(1f)).coerceIn(0f, 1f) * 0.7f
                         }, userScrollEnabled = false, beyondViewportPageCount = 1) { page ->
                         val isFavPage = page == 0
-                        val smode = sorts[if (isFavPage) "fav" else "f:" + (lists.getOrNull(mainTab) ?: "")] ?: 0
-                        val shownList = remember(isFavPage, favs, channels, smode, counts) {
-                            sortChannels(if (isFavPage) favs else channels, smode, counts)
+                        val listName = lists.getOrNull(page - 1) ?: ""
+                        val pageSrc = if (isFavPage) favs else listChannels[listName]
+                        val smode = sorts[if (isFavPage) "fav" else "f:$listName"] ?: 0
+                        val shownList = remember(isFavPage, pageSrc, smode, counts) {
+                            sortChannels(pageSrc ?: emptyList(), smode, counts)
                         }
+                        val gs = if (isFavPage) favState else gridFor(listName)
+                        if (!isFavPage) ScrollTicks(gs, hapticView)
                         Box(Modifier.fillMaxSize()) {
                             LazyVerticalGrid(
-                                state = if (isFavPage) favState else gridState,
+                                state = gs,
                                 columns = GridCells.Adaptive(150.dp),
                                 contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = hh + 8.dp, bottom = 48.dp),
                                 horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -2090,9 +2094,9 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                                 Box(Modifier.width(150.dp).height(48.dp).glass(16.dp).clickable { permLauncher.launch(videoPerm()) },
                                     contentAlignment = Alignment.Center) { Text("السماح", color = pal.text, fontWeight = FontWeight.SemiBold) }
                             }
-                            else if (!isFavPage && loading) Text("جاري التحميل...", color = pal.textDim,
+                            else if (!isFavPage && pageSrc == null) Text("جاري التحميل...", color = pal.textDim,
                                 modifier = Modifier.align(Alignment.Center))
-                            else if (!isFavPage && channels.isEmpty()) Text("ما في فيديوهات هنا. تقدر تفتح ملف من الإعدادات", color = pal.textDim,
+                            else if (!isFavPage && pageSrc!!.isEmpty()) Text("ما في فيديوهات هنا. تقدر تفتح ملف من الإعدادات", color = pal.textDim,
                                 textAlign = TextAlign.Center, modifier = Modifier.align(Alignment.Center).padding(32.dp))
                         }
                     }
@@ -2170,7 +2174,7 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                                         DropdownMenuItem(text = { Text(if ((sorts[sortKey()] ?: 0) == i) "✓  $t" else t) }, onClick = {
                                             val k = sortKey()
                                             sorts = sorts + (k to i); store.saveSorts(sorts); menuSort = false
-                                            scope.launch { (if (tab == -1) favState else gridState).scrollToItem(0) }
+                                            scope.launch { (if (tab == -1) favState else gridFor(lists.getOrNull(mainTab) ?: "")).scrollToItem(0) }
                                         })
                                     }
                                 }
@@ -2180,35 +2184,40 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                                 Icon(IGear, contentDescription = null, tint = pal.text, modifier = Modifier.size(22.dp))
                             }
                         }
-                        LazyRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)) {
-                            item {
-                                Chip("★ المفضلة", { 1f - pageProg() }, Modifier.onGloballyPositioned { chipX[-1] = it.positionInRoot().x + it.size.width / 2f }) { tab = -1 }
-                            }
-                            itemsIndexed(lists) { i, u ->
-                                val a by animateFloatAsState(targetValue = if (mainTab == i) 1f else 0f, animationSpec = tween(220), label = "sel")
+                        // صف الشرائح: يتحرك مع السحب حي، والشريحة المحددة دايماً بنص الشاشة (التمرير برمجي بس)
+                        Row(
+                            Modifier.fillMaxWidth().onSizeChanged { chipRowW = it.width }.horizontalScroll(chipScroll, enabled = false),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            val sideW = ((androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp - 32) / 2).dp
+                            Spacer(Modifier.width(sideW))
+                            Chip("★ المفضلة", { (1f - kotlin.math.abs(pagePos())).coerceIn(0f, 1f) },
+                                Modifier.onGloballyPositioned { val o = Offset(it.positionInParent().x, it.size.width.toFloat()); if (chipPos[0] != o) chipPos[0] = o }) { tab = -1 }
+                            lists.forEachIndexed { i, u ->
                                 val label = if (u.isEmpty()) "كل الفيديوهات" else u
-                                Chip(label.take(24), { a * pageProg() },
-                                    Modifier.onGloballyPositioned { chipX[i] = it.positionInRoot().x + it.size.width / 2f }) { tab = i }
+                                Chip(label.take(24), { (1f - kotlin.math.abs(pagePos() - (i + 1))).coerceIn(0f, 1f) },
+                                    Modifier.onGloballyPositioned { val o = Offset(it.positionInParent().x, it.size.width.toFloat()); if (chipPos[i + 1] != o) chipPos[i + 1] = o }) { tab = i }
                             }
+                            Spacer(Modifier.width(sideW))
                         }
-                        // النقطة الديناميكية: تتبع السحب بين الصفحتين وتتمدد وهي تتحرك
-                        val mainX by animateFloatAsState(
-                            targetValue = chipX[mainTab] ?: 0f,
-                            animationSpec = spring(dampingRatio = 0.65f, stiffness = 260f), label = "mx"
-                        )
+                        // النقطة الديناميكية: تتبع إصبعك بالضبط بين الشرائح وتتمدد وهي تتحرك (نفس سحب المفضلة)
                         Box(Modifier.fillMaxWidth().height(12.dp)
-                            .onGloballyPositioned { dotLeft = it.positionInRoot().x }
                             .drawBehind {
-                                val favX = chipX[-1] ?: 0f
-                                val pageP = pageProg()
-                                val x = mix(favX, mainX, pageP) - dotLeft
-                                val moving = kotlin.math.sin(Math.PI.toFloat() * pageP)
-                                val extra = kotlin.math.abs((chipX[mainTab] ?: 0f) - mainX).coerceAtMost(160f)
-                                val w = 16.dp.toPx() + moving * 36.dp.toPx() + extra * 0.4f
-                                val h = 5.dp.toPx()
-                                drawRoundRect(pal.dot.copy(0.28f), Offset(x - w / 2f - 3.dp.toPx(), 1.dp.toPx()),
-                                    Size(w + 6.dp.toPx(), h + 4.dp.toPx()), CornerRadius(h))
-                                drawRoundRect(pal.dot.copy(0.95f), Offset(x - w / 2f, 3.dp.toPx()), Size(w, h), CornerRadius(h / 2f))
+                                val n = pager.pageCount
+                                val pos = pagePos().coerceIn(0f, (n - 1).toFloat())
+                                val k0 = kotlin.math.floor(pos).toInt().coerceIn(0, n - 1)
+                                val k1 = (k0 + 1).coerceAtMost(n - 1)
+                                val ca = chipPos[k0]; val cb = chipPos[k1]
+                                if (ca != null && cb != null) {
+                                    val f = pos - k0
+                                    val x = (ca.x + ca.y / 2f) * (1f - f) + (cb.x + cb.y / 2f) * f - chipScroll.value
+                                    val moving = kotlin.math.sin(Math.PI.toFloat() * f)
+                                    val w = 16.dp.toPx() + moving * 36.dp.toPx()
+                                    val h = 5.dp.toPx()
+                                    drawRoundRect(pal.dot.copy(0.28f), Offset(x - w / 2f - 3.dp.toPx(), 1.dp.toPx()),
+                                        Size(w + 6.dp.toPx(), h + 4.dp.toPx()), CornerRadius(h))
+                                    drawRoundRect(pal.dot.copy(0.95f), Offset(x - w / 2f, 3.dp.toPx()), Size(w, h), CornerRadius(h / 2f))
+                                }
                             })
                     }
                 }
