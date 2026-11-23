@@ -132,6 +132,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.launch
@@ -1286,6 +1287,59 @@ fun rememberThumb(uri: String): ImageBitmap? {
     return bmp
 }
 
+// معاينة متحركة (مثل GIF) للبطاقات: 6 لقطات صغيرة من الفيديو تتبدل كل نص ثانية تقريباً.
+// خفيفة: الاستخراج على خيط واحد بس، يبدأ بعد ما التمرير يوقف 0.7 ثانية، لقطات المفاتيح (أسرع)، حجم صغير،
+// كاش محدود 20MB، ويوقف التبديل أثناء التمرير، وينلغي كله لو البطاقة طلعت من الشاشة
+private val previewCache = object : android.util.LruCache<String, List<ImageBitmap>>(20 * 1024 * 1024) {
+    override fun sizeOf(key: String, value: List<ImageBitmap>): Int = value.sumOf { it.width * it.height * 4 }.coerceAtLeast(1)
+}
+
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+private val previewIO = Dispatchers.IO.limitedParallelism(1)
+
+@Composable
+fun rememberPreview(uri: String, durMs: Long, scrolling: () -> Boolean): State<List<ImageBitmap>?> {
+    val ctx = LocalContext.current
+    val st = remember(uri) { mutableStateOf<List<ImageBitmap>?>(previewCache.get(uri)) }
+    LaunchedEffect(uri) {
+        if (st.value != null) return@LaunchedEffect
+        while (true) { delay(700); if (!scrolling()) break }
+        val list = withContext(previewIO) {
+            val mmr = android.media.MediaMetadataRetriever()
+            try {
+                mmr.setDataSource(ctx, android.net.Uri.parse(uri))
+                val d = if (durMs > 0) durMs else (mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L)
+                if (d < 2500L) return@withContext null
+                val out = ArrayList<ImageBitmap>(6)
+                for (f in floatArrayOf(0.05f, 0.20f, 0.35f, 0.50f, 0.65f, 0.80f)) {
+                    ensureActive()
+                    while (scrolling()) { delay(200); ensureActive() }
+                    val raw = mmr.getScaledFrameAtTime((d * f).toLong() * 1000L,
+                        android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 360, 202) ?: continue
+                    val hw = try { raw.copy(android.graphics.Bitmap.Config.HARDWARE, false) } catch (_: Throwable) { null }
+                    out.add((if (hw != null) { raw.recycle(); hw } else raw).asImageBitmap())
+                }
+                if (out.size >= 2) out else null
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e
+            } catch (_: Throwable) { null
+            } finally { try { mmr.release() } catch (_: Throwable) {} }
+        }
+        if (list != null) { previewCache.put(uri, list); st.value = list }
+    }
+    return st
+}
+
+// طبقة المعاينة فوق الصورة الثابتة: بس هي تعاد تركيبها كل نص ثانية، وتتوقف أثناء التمرير
+@Composable
+fun PreviewOverlay(frames: List<ImageBitmap>, scrolling: () -> Boolean, modifier: Modifier = Modifier) {
+    var i by remember(frames) { mutableIntStateOf(0) }
+    LaunchedEffect(frames) {
+        while (true) { delay(550); if (!scrolling()) i = (i + 1) % frames.size }
+    }
+    Image(frames[i % frames.size], contentDescription = null, contentScale = ContentScale.Crop, modifier = modifier,
+        filterQuality = androidx.compose.ui.graphics.FilterQuality.Low)
+}
+
 @Composable
 fun GlassIcon(icon: ImageVector, modifier: Modifier = Modifier, tint: Color = Color.White, onClick: () -> Unit) {
     Box(
@@ -1294,66 +1348,74 @@ fun GlassIcon(icon: ImageVector, modifier: Modifier = Modifier, tint: Color = Co
     ) { Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(26.dp)) }
 }
 
-// زر التشغيل/الإيقاف بأسلوب الزجاج السائل (Liquid Glass): جسم شفاف بتدرج، حافة مضيئة بالجهتين المتقابلتين،
-// حلقة انكسار داخلية، لمعات على الأعلى والأسفل، ظل ناعم، وعند اللمس يكبر بنطّة زنبركية ويشتد لمعانه
+// زر التشغيل/الإيقاف بأسلوب iOS (Liquid Glass): قرص زجاجي شفاف هادئ بدون لمعات كبيرة، حافة رفيعة بإضاءة متقابلة،
+// قوسين لامعين رفيعين داخل الحافة، وأيقونات مدوّرة الزوايا تتبدل بنعومة. عند اللمس يكبر بنطّة ناعمة ويفتح لونه
 @Composable
 fun LiquidPlayButton(playing: Boolean, modifier: Modifier = Modifier, diameter: Dp = 84.dp, onClick: () -> Unit) {
     var pressed by remember { mutableStateOf(false) }
-    val sc by animateFloatAsState(if (pressed) 1.13f else 1f, spring(dampingRatio = 0.42f, stiffness = 360f), label = "lqs")
-    val glow by animateFloatAsState(if (pressed) 1f else 0f, tween(200), label = "lqg")
-    val pp by animateFloatAsState(if (playing) 1f else 0f, spring(dampingRatio = 0.62f, stiffness = 320f), label = "lqp")
+    val sc by animateFloatAsState(if (pressed) 1.08f else 1f, spring(dampingRatio = 0.6f, stiffness = 380f), label = "lqs")
+    val glow by animateFloatAsState(if (pressed) 1f else 0f, tween(180), label = "lqg")
+    val pp by animateFloatAsState(if (playing) 1f else 0f, spring(dampingRatio = 0.8f, stiffness = 420f), label = "lqp")
     Box(
         modifier.size(diameter).graphicsLayer { scaleX = sc; scaleY = sc }
             .drawBehind {
                 val r = this.size.minDimension / 2f
                 val c = center
                 val w = Color.White
-                // ظل ناعم تحت الزر يعطيه عمق
-                val sc2 = Offset(c.x, c.y + r * 0.12f)
-                drawCircle(Brush.radialGradient(listOf(Color.Black.copy(0.34f), Color.Black.copy(0f)), center = sc2, radius = r * 1.4f),
-                    radius = r * 1.4f, center = sc2)
-                // جسم الزجاج: شفاف، أخف بالنص وأكثف عند الأطراف مثل العدسة
+                // ظل ناعم واسع
+                val so = Offset(c.x, c.y + r * 0.10f)
+                drawCircle(Brush.radialGradient(listOf(Color.Black.copy(0.26f), Color.Black.copy(0f)), center = so, radius = r * 1.3f),
+                    radius = r * 1.3f, center = so)
+                // جسم المادة: تظليل دخاني خفيف عشان الأيقونة تبان على أي مشهد + تدرج أبيض شفاف قطري
+                drawCircle(Color.Black.copy(0.20f), radius = r, center = c)
+                drawCircle(Brush.linearGradient(listOf(w.copy(0.20f + 0.10f * glow), w.copy(0.05f + 0.04f * glow), w.copy(0.12f + 0.06f * glow)),
+                    start = Offset(c.x - r, c.y - r), end = Offset(c.x + r, c.y + r)), radius = r, center = c)
+                // حافة داخلية ناعمة (انكسار الضوء عند الأطراف)
                 drawCircle(Brush.radialGradient(
-                    colorStops = arrayOf(0f to w.copy(0.07f + 0.05f * glow), 0.72f to w.copy(0.10f + 0.05f * glow), 1f to w.copy(0.24f)),
+                    colorStops = arrayOf(0.78f to w.copy(0f), 0.95f to w.copy(0.12f), 1f to w.copy(0.03f)),
                     center = c, radius = r), radius = r, center = c)
-                // انعكاس طولي: فاتح من الأعلى اليسار وغامق خفيف من الأسفل اليمين
-                drawCircle(Brush.linearGradient(
-                    listOf(w.copy(0.30f), w.copy(0f), Color.Black.copy(0.16f)),
-                    start = Offset(c.x - r * 0.7f, c.y - r), end = Offset(c.x + r * 0.7f, c.y + r)), radius = r, center = c)
-                // حلقة الانكسار الداخلية عند الحافة
-                drawCircle(Brush.radialGradient(
-                    colorStops = arrayOf(0.76f to w.copy(0f), 0.92f to w.copy(0.10f), 1f to w.copy(0.30f)),
-                    center = c, radius = r), radius = r, center = c)
-                // لمعة علوية (انعكاس الضوء) ولمعة سفلية أخف
-                drawOval(Brush.radialGradient(listOf(w.copy(0.62f + 0.2f * glow), w.copy(0f)),
-                    center = Offset(c.x - r * 0.12f, c.y - r * 0.64f), radius = r * 0.62f),
-                    topLeft = Offset(c.x - r * 0.6f, c.y - r * 0.9f), size = Size(r * 1.2f, r * 0.52f))
-                drawOval(Brush.radialGradient(listOf(w.copy(0.26f), w.copy(0f)),
-                    center = Offset(c.x + r * 0.22f, c.y + r * 0.7f), radius = r * 0.5f),
-                    topLeft = Offset(c.x - r * 0.5f, c.y + r * 0.5f), size = Size(r * 1.0f, r * 0.38f))
-                // وميض عند اللمس
-                if (glow > 0.01f) drawCircle(w.copy(0.10f * glow), radius = r, center = c)
-                // الحافة: خيط مضيء قوي بالأعلى اليسار والأسفل اليمين وخافت بالجهتين الثانيتين
+                // الحافة الخارجية الرفيعة: أقوى بالأعلى اليسار والأسفل اليمين
                 drawCircle(Brush.sweepGradient(
-                    colorStops = arrayOf(0f to w.copy(0.35f), 0.125f to w.copy(0.92f), 0.25f to w.copy(0.22f), 0.5f to w.copy(0.20f),
-                        0.625f to w.copy(0.98f), 0.75f to w.copy(0.28f), 1f to w.copy(0.35f)), center = c),
-                    radius = r - 0.75.dp.toPx(), center = c, style = androidx.compose.ui.graphics.drawscope.Stroke(1.5.dp.toPx()))
+                    colorStops = arrayOf(0f to w.copy(0.30f), 0.125f to w.copy(0.80f), 0.25f to w.copy(0.26f), 0.5f to w.copy(0.24f),
+                        0.625f to w.copy(0.95f), 0.75f to w.copy(0.28f), 1f to w.copy(0.30f)), center = c),
+                    radius = r - 0.6.dp.toPx(), center = c, style = androidx.compose.ui.graphics.drawscope.Stroke(1.2.dp.toPx()))
+                // قوسين لامعين رفيعين داخل الحافة (انعكاس مثل زجاج iOS)
+                val ar = r - 4.dp.toPx()
+                val tl = Offset(c.x - ar, c.y - ar); val asz = Size(ar * 2f, ar * 2f)
+                drawArc(w.copy(0.55f + 0.2f * glow), 200f, 50f, false, tl, asz, style = androidx.compose.ui.graphics.drawscope.Stroke(1.6.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round))
+                drawArc(w.copy(0.30f + 0.1f * glow), 20f, 50f, false, tl, asz, style = androidx.compose.ui.graphics.drawscope.Stroke(1.6.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round))
+                if (glow > 0.01f) drawCircle(w.copy(0.08f * glow), radius = r, center = c)
             }
             .pointerInput(Unit) {
                 detectTapGestures(onPress = { pressed = true; tryAwaitRelease(); pressed = false }, onTap = { onClick() })
             },
         contentAlignment = Alignment.Center
     ) {
-        // تبدّل الأيقونتين بحركة زنبركية (تدور وتصغر وتتلاشى)
-        val isz = diameter * 0.44f
-        Icon(IPlay, contentDescription = null, tint = Color.White.copy(0.96f),
-            modifier = Modifier.size(isz).graphicsLayer {
-                alpha = (1f - pp).coerceIn(0f, 1f); scaleX = 1f - 0.35f * pp; scaleY = 1f - 0.35f * pp; rotationZ = 45f * pp
-            })
-        Icon(IPause, contentDescription = null, tint = Color.White.copy(0.96f),
-            modifier = Modifier.size(isz).graphicsLayer {
-                alpha = pp.coerceIn(0f, 1f); scaleX = 0.65f + 0.35f * pp; scaleY = 0.65f + 0.35f * pp; rotationZ = -45f * (1f - pp)
-            })
+        // أيقونات مدوّرة الزوايا (مثل SF Symbols): مثلث التشغيل وعمودي الإيقاف، يتبدلان بتلاشي وتصغير خفيف
+        androidx.compose.foundation.Canvas(Modifier.fillMaxSize()) {
+            val s = size.minDimension * 0.17f
+            val c = center
+            val col = Color.White
+            val p = pp
+            if (p < 0.99f) scale(1f - 0.30f * p, 1f - 0.30f * p, pivot = c) {
+                val ox = s * 0.14f   // إزاحة بصرية: المثلث يظهر أنه بالنص
+                val path = Path().apply {
+                    moveTo(c.x - s * 0.72f + ox, c.y - s * 0.95f)
+                    lineTo(c.x - s * 0.72f + ox, c.y + s * 0.95f)
+                    lineTo(c.x + s * 0.95f + ox, c.y)
+                    close()
+                }
+                drawPath(path, col.copy(0.97f * (1f - p)))
+                drawPath(path, col.copy(0.97f * (1f - p)), style = androidx.compose.ui.graphics.drawscope.Stroke(s * 0.55f,
+                    join = androidx.compose.ui.graphics.StrokeJoin.Round, cap = androidx.compose.ui.graphics.StrokeCap.Round))
+            }
+            if (p > 0.01f) scale(0.70f + 0.30f * p, 0.70f + 0.30f * p, pivot = c) {
+                val bw = s * 0.62f; val bh = s * 2.0f; val gap = s * 0.50f
+                val cr = CornerRadius(bw * 0.32f)
+                drawRoundRect(col.copy(0.97f * p), Offset(c.x - gap / 2f - bw, c.y - bh / 2f), Size(bw, bh), cr)
+                drawRoundRect(col.copy(0.97f * p), Offset(c.x + gap / 2f, c.y - bh / 2f), Size(bw, bh), cr)
+            }
+        }
     }
 }
 
@@ -1383,10 +1445,11 @@ fun Chip(text: String, sel: () -> Float, modifier: Modifier = Modifier, onLong: 
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun Tile(c: Channel, fav: Boolean, onLong: () -> Unit, onClick: (Rect) -> Unit) {
+fun Tile(c: Channel, fav: Boolean, scrolling: () -> Boolean = { false }, onLong: () -> Unit, onClick: (Rect) -> Unit) {
     // نحفظ مكان البطاقة بدون ما نسبب إعادة رسم، ونستخدمه وقت الضغط لانيميشن الفتح
     val holder = remember { arrayOfNulls<LayoutCoordinates>(1) }
     val thumb = rememberThumb(c.url)
+    val preview by rememberPreview(c.url, c.ref.toLongOrNull() ?: 0L, scrolling)
     Column(
         Modifier.combinedClickable(
             onClick = { onClick(holder[0]?.let { if (it.isAttached) it.boundsInRoot() else Rect.Zero } ?: Rect.Zero) },
@@ -1400,6 +1463,7 @@ fun Tile(c: Channel, fav: Boolean, onLong: () -> Unit, onClick: (Rect) -> Unit) 
             else Image(thumb, contentDescription = null, contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize().padding(1.dp).clip(RoundedCornerShape(21.dp)),
                 filterQuality = androidx.compose.ui.graphics.FilterQuality.Medium)
+            if (thumb != null) preview?.let { PreviewOverlay(it, scrolling, Modifier.fillMaxSize().padding(1.dp).clip(RoundedCornerShape(21.dp))) }
             // مدة الفيديو
             c.ref.toLongOrNull()?.takeIf { it > 0L }?.let { d ->
                 Text(fmtDur(d), color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Medium,
@@ -2212,7 +2276,7 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                                 modifier = Modifier.fillMaxSize()
                             ) {
                                 items(shownList, contentType = { "tile" }) { ch ->
-                                    Tile(ch, false, onLong = {}) { r -> start(ch, r) }
+                                    Tile(ch, false, scrolling = { gs.isScrollInProgress }, onLong = {}) { r -> start(ch, r) }
                                 }
                             }
                             if (isFavPage && favs.isEmpty()) Text("اضغط مطولاً على أي فيديو لإضافته للمفضلة", color = pal.textDim,
