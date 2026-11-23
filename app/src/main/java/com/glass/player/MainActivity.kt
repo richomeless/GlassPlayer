@@ -1501,7 +1501,7 @@ fun VideoView(p: Player, modifier: Modifier = Modifier, onView: ((PlayerView) ->
 )
 
 // إضاءة محيطية حول الفيديو: نأخذ إطار صغير جداً من الفيديو كل ~120ms، ننعّم ألوانه مع الإطار السابق،
-// ونرسمه مكبّراً ومموهاً خلف الفيديو فيطلع توهج بألوان المشهد حوالين الفيديو
+// ونرسمه انعكاس مرآة مضغوط عند أطراف الفيديو (مقعر، ملتصق بالحافة ويتلاشى للخارج) زي iOS
 @Composable
 fun AmbientGlow(pv: PlayerView?, ar: Float, modifier: Modifier = Modifier) {
     val gw = 16; val gh = 9      // حجم الشبكة اللي نرسمها
@@ -1510,7 +1510,7 @@ fun AmbientGlow(pv: PlayerView?, ar: Float, modifier: Modifier = Modifier) {
     val tmp = remember { android.graphics.Bitmap.createBitmap(sw, sh, android.graphics.Bitmap.Config.ARGB_8888) }
     val img = remember { bmp.asImageBitmap() }
     var tick by remember { mutableStateOf(0) }
-    val fx = remember { if (Build.VERSION.SDK_INT >= 31) ambientEffect(160f) else null }
+    val fx = remember { if (Build.VERSION.SDK_INT >= 31) ambientEffect(70f) else null }
     LaunchedEffect(pv) {
         if (pv == null) return@LaunchedEffect
         val target = FloatArray(gw * gh * 3)
@@ -1567,17 +1567,47 @@ fun AmbientGlow(pv: PlayerView?, ar: Float, modifier: Modifier = Modifier) {
         }
     }
     Box(modifier.fillMaxSize()
-        .graphicsLayer { renderEffect = fx }
+        .graphicsLayer { renderEffect = fx; compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen }
         .drawBehind {
             tick   // قراءة الحالة عشان يعاد الرسم مع كل إطار جديد
             val a = if (ar > 0f) ar else 16f / 9f
             val rw: Float; val rh: Float
             if (a > size.width / size.height) { rw = size.width; rh = size.width / a } else { rh = size.height; rw = size.height * a }
-            val gwid = rw * 1.08f; val ghei = rh * 1.2f
-            drawImage(img,
-                dstOffset = androidx.compose.ui.unit.IntOffset(((size.width - gwid) / 2f).toInt(), ((size.height - ghei) / 2f).toInt()),
-                dstSize = androidx.compose.ui.unit.IntSize(gwid.toInt(), ghei.toInt()),
-                alpha = 0.5f, filterQuality = androidx.compose.ui.graphics.FilterQuality.Medium)
+            val cx = size.width / 2f; val cy = size.height / 2f
+            val x0 = cx - rw / 2f; val y0 = cy - rh / 2f
+            val e = minOf(rw, rh) * 0.24f   // عمق الانعكاس خارج حافة الفيديو
+            val xs = floatArrayOf(x0 - e, x0, x0 + rw, x0 + rw + e)
+            val ys = floatArrayOf(y0 - e, y0, y0 + rh, y0 + rh + e)
+            // 1) انعكاس مرآة لكل حافة مضغوط داخل شريط ضيق: الألوان تتجمّع عند الأطراف (مقعر) وتكمل من لون الحافة نفسها
+            for (iy in 0..2) for (ix in 0..2) {
+                val dx = xs[ix]; val dy = ys[iy]
+                val dw = xs[ix + 1] - xs[ix]; val dh = ys[iy + 1] - ys[iy]
+                val sx = if (ix == 1) 1f else -1f
+                val sy = if (iy == 1) 1f else -1f
+                androidx.compose.ui.graphics.drawscope.withTransform({
+                    scale(sx, sy, pivot = Offset(dx + dw / 2f, dy + dh / 2f))
+                }) {
+                    drawImage(img,
+                        dstOffset = androidx.compose.ui.unit.IntOffset(dx.toInt(), dy.toInt()),
+                        dstSize = androidx.compose.ui.unit.IntSize(dw.toInt().coerceAtLeast(1), dh.toInt().coerceAtLeast(1)),
+                        alpha = 0.95f, filterQuality = androidx.compose.ui.graphics.FilterQuality.Medium)
+                }
+            }
+            // 2) تلاشي مقعّر: قوي وملتصق بحافة الفيديو، ثم ينحني ويخف بسرعة للخارج (t=0 عند الحافة، 1 عند آخر الانعكاس)
+            val st = listOf(0f to 0.95f, 0.12f to 0.74f, 0.35f to 0.32f, 0.65f to 0.08f, 1f to 0f)
+            val outward = st.map { (t, al) -> t to Color.Black.copy(alpha = al) }.toTypedArray()
+            val inward = st.reversed().map { (t, al) -> (1f - t) to Color.Black.copy(alpha = al) }.toTypedArray()
+            val dm = androidx.compose.ui.graphics.BlendMode.DstIn
+            val r = x0 + rw; val bt = y0 + rh
+            drawRect(Brush.horizontalGradient(colorStops = inward, startX = x0 - e, endX = x0), Offset(x0 - e, y0), Size(e, rh), blendMode = dm)
+            drawRect(Brush.horizontalGradient(colorStops = outward, startX = r, endX = r + e), Offset(r, y0), Size(e, rh), blendMode = dm)
+            drawRect(Brush.verticalGradient(colorStops = inward, startY = y0 - e, endY = y0), Offset(x0, y0 - e), Size(rw, e), blendMode = dm)
+            drawRect(Brush.verticalGradient(colorStops = outward, startY = bt, endY = bt + e), Offset(x0, bt), Size(rw, e), blendMode = dm)
+            // الزوايا: تلاشي دائري من زاوية الفيديو، فتطلع الزاوية مقوّسة مثل الزجاج
+            drawRect(Brush.radialGradient(colorStops = outward, center = Offset(x0, y0), radius = e), Offset(x0 - e, y0 - e), Size(e, e), blendMode = dm)
+            drawRect(Brush.radialGradient(colorStops = outward, center = Offset(r, y0), radius = e), Offset(r, y0 - e), Size(e, e), blendMode = dm)
+            drawRect(Brush.radialGradient(colorStops = outward, center = Offset(x0, bt), radius = e), Offset(x0 - e, bt), Size(e, e), blendMode = dm)
+            drawRect(Brush.radialGradient(colorStops = outward, center = Offset(r, bt), radius = e), Offset(r, bt), Size(e, e), blendMode = dm)
         })
 }
 
