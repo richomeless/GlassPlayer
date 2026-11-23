@@ -1584,9 +1584,7 @@ fun AmbientGlow(pv: PlayerView?, ar: Float, modifier: Modifier = Modifier) {
                 val dw = xs[ix + 1] - xs[ix]; val dh = ys[iy + 1] - ys[iy]
                 val sx = if (ix == 1) 1f else -1f
                 val sy = if (iy == 1) 1f else -1f
-                androidx.compose.ui.graphics.drawscope.withTransform({
-                    scale(sx, sy, pivot = Offset(dx + dw / 2f, dy + dh / 2f))
-                }) {
+                scale(sx, sy, pivot = Offset(dx + dw / 2f, dy + dh / 2f)) {
                     drawImage(img,
                         dstOffset = androidx.compose.ui.unit.IntOffset(dx.toInt(), dy.toInt()),
                         dstSize = androidx.compose.ui.unit.IntSize(dw.toInt().coerceAtLeast(1), dh.toInt().coerceAtLeast(1)),
