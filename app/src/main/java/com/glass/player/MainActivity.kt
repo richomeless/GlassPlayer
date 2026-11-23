@@ -132,7 +132,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.launch
@@ -1287,59 +1286,6 @@ fun rememberThumb(uri: String): ImageBitmap? {
     return bmp
 }
 
-// معاينة متحركة (مثل GIF) للبطاقات: 6 لقطات صغيرة من الفيديو تتبدل كل نص ثانية تقريباً.
-// خفيفة: الاستخراج على خيط واحد بس، يبدأ بعد ما التمرير يوقف 0.7 ثانية، لقطات المفاتيح (أسرع)، حجم صغير،
-// كاش محدود 20MB، ويوقف التبديل أثناء التمرير، وينلغي كله لو البطاقة طلعت من الشاشة
-private val previewCache = object : android.util.LruCache<String, List<ImageBitmap>>(20 * 1024 * 1024) {
-    override fun sizeOf(key: String, value: List<ImageBitmap>): Int = value.sumOf { it.width * it.height * 4 }.coerceAtLeast(1)
-}
-
-@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-private val previewIO = Dispatchers.IO.limitedParallelism(1)
-
-@Composable
-fun rememberPreview(uri: String, durMs: Long, scrolling: () -> Boolean): State<List<ImageBitmap>?> {
-    val ctx = LocalContext.current
-    val st = remember(uri) { mutableStateOf<List<ImageBitmap>?>(previewCache.get(uri)) }
-    LaunchedEffect(uri) {
-        if (st.value != null) return@LaunchedEffect
-        while (true) { delay(700); if (!scrolling()) break }
-        val list = withContext(previewIO) {
-            val mmr = android.media.MediaMetadataRetriever()
-            try {
-                mmr.setDataSource(ctx, android.net.Uri.parse(uri))
-                val d = if (durMs > 0) durMs else (mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L)
-                if (d < 2500L) return@withContext null
-                val out = ArrayList<ImageBitmap>(6)
-                for (f in floatArrayOf(0.05f, 0.20f, 0.35f, 0.50f, 0.65f, 0.80f)) {
-                    ensureActive()
-                    while (scrolling()) { delay(200); ensureActive() }
-                    val raw = mmr.getScaledFrameAtTime((d * f).toLong() * 1000L,
-                        android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 360, 202) ?: continue
-                    val hw = try { raw.copy(android.graphics.Bitmap.Config.HARDWARE, false) } catch (_: Throwable) { null }
-                    out.add((if (hw != null) { raw.recycle(); hw } else raw).asImageBitmap())
-                }
-                if (out.size >= 2) out else null
-            } catch (e: kotlinx.coroutines.CancellationException) { throw e
-            } catch (_: Throwable) { null
-            } finally { try { mmr.release() } catch (_: Throwable) {} }
-        }
-        if (list != null) { previewCache.put(uri, list); st.value = list }
-    }
-    return st
-}
-
-// طبقة المعاينة فوق الصورة الثابتة: بس هي تعاد تركيبها كل نص ثانية، وتتوقف أثناء التمرير
-@Composable
-fun PreviewOverlay(frames: List<ImageBitmap>, scrolling: () -> Boolean, modifier: Modifier = Modifier) {
-    var i by remember(frames) { mutableIntStateOf(0) }
-    LaunchedEffect(frames) {
-        while (true) { delay(550); if (!scrolling()) i = (i + 1) % frames.size }
-    }
-    Image(frames[i % frames.size], contentDescription = null, contentScale = ContentScale.Crop, modifier = modifier,
-        filterQuality = androidx.compose.ui.graphics.FilterQuality.Low)
-}
-
 @Composable
 fun GlassIcon(icon: ImageVector, modifier: Modifier = Modifier, tint: Color = Color.White, onClick: () -> Unit) {
     Box(
@@ -1445,11 +1391,10 @@ fun Chip(text: String, sel: () -> Float, modifier: Modifier = Modifier, onLong: 
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun Tile(c: Channel, fav: Boolean, scrolling: () -> Boolean = { false }, onLong: () -> Unit, onClick: (Rect) -> Unit) {
+fun Tile(c: Channel, fav: Boolean, onLong: () -> Unit, onClick: (Rect) -> Unit) {
     // نحفظ مكان البطاقة بدون ما نسبب إعادة رسم، ونستخدمه وقت الضغط لانيميشن الفتح
     val holder = remember { arrayOfNulls<LayoutCoordinates>(1) }
     val thumb = rememberThumb(c.url)
-    val preview by rememberPreview(c.url, c.ref.toLongOrNull() ?: 0L, scrolling)
     Column(
         Modifier.combinedClickable(
             onClick = { onClick(holder[0]?.let { if (it.isAttached) it.boundsInRoot() else Rect.Zero } ?: Rect.Zero) },
@@ -1463,7 +1408,6 @@ fun Tile(c: Channel, fav: Boolean, scrolling: () -> Boolean = { false }, onLong:
             else Image(thumb, contentDescription = null, contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize().padding(1.dp).clip(RoundedCornerShape(21.dp)),
                 filterQuality = androidx.compose.ui.graphics.FilterQuality.Medium)
-            if (thumb != null) preview?.let { PreviewOverlay(it, scrolling, Modifier.fillMaxSize().padding(1.dp).clip(RoundedCornerShape(21.dp))) }
             // مدة الفيديو
             c.ref.toLongOrNull()?.takeIf { it > 0L }?.let { d ->
                 Text(fmtDur(d), color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Medium,
@@ -2276,7 +2220,7 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                                 modifier = Modifier.fillMaxSize()
                             ) {
                                 items(shownList, contentType = { "tile" }) { ch ->
-                                    Tile(ch, false, scrolling = { gs.isScrollInProgress }, onLong = {}) { r -> start(ch, r) }
+                                    Tile(ch, false, onLong = {}) { r -> start(ch, r) }
                                 }
                             }
                             if (isFavPage && favs.isEmpty()) Text("اضغط مطولاً على أي فيديو لإضافته للمفضلة", color = pal.textDim,

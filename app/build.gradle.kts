@@ -12,8 +12,8 @@ android {
         applicationId = "com.glass.player"
         minSdk = 31
         targetSdk = 35
-        versionCode = 16
-        versionName = "1.14"
+        versionCode = 17
+        versionName = "1.15"
         // اللغات اللي نحتاجها بس (مكتبات كومبوز وميديا تجيب عشرات اللغات)
         resourceConfigurations += listOf("ar", "en")
         // الجوالات الحديثة كلها arm64: نشيل مكتبات المعمارات الثانية
