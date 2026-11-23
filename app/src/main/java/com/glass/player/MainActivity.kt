@@ -1294,6 +1294,69 @@ fun GlassIcon(icon: ImageVector, modifier: Modifier = Modifier, tint: Color = Co
     ) { Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(26.dp)) }
 }
 
+// زر التشغيل/الإيقاف بأسلوب الزجاج السائل (Liquid Glass): جسم شفاف بتدرج، حافة مضيئة بالجهتين المتقابلتين،
+// حلقة انكسار داخلية، لمعات على الأعلى والأسفل، ظل ناعم، وعند اللمس يكبر بنطّة زنبركية ويشتد لمعانه
+@Composable
+fun LiquidPlayButton(playing: Boolean, modifier: Modifier = Modifier, diameter: Dp = 84.dp, onClick: () -> Unit) {
+    var pressed by remember { mutableStateOf(false) }
+    val sc by animateFloatAsState(if (pressed) 1.13f else 1f, spring(dampingRatio = 0.42f, stiffness = 360f), label = "lqs")
+    val glow by animateFloatAsState(if (pressed) 1f else 0f, tween(200), label = "lqg")
+    val pp by animateFloatAsState(if (playing) 1f else 0f, spring(dampingRatio = 0.62f, stiffness = 320f), label = "lqp")
+    Box(
+        modifier.size(diameter).graphicsLayer { scaleX = sc; scaleY = sc }
+            .drawBehind {
+                val r = this.size.minDimension / 2f
+                val c = center
+                val w = Color.White
+                // ظل ناعم تحت الزر يعطيه عمق
+                val sc2 = Offset(c.x, c.y + r * 0.12f)
+                drawCircle(Brush.radialGradient(listOf(Color.Black.copy(0.34f), Color.Black.copy(0f)), center = sc2, radius = r * 1.4f),
+                    radius = r * 1.4f, center = sc2)
+                // جسم الزجاج: شفاف، أخف بالنص وأكثف عند الأطراف مثل العدسة
+                drawCircle(Brush.radialGradient(
+                    colorStops = arrayOf(0f to w.copy(0.07f + 0.05f * glow), 0.72f to w.copy(0.10f + 0.05f * glow), 1f to w.copy(0.24f)),
+                    center = c, radius = r), radius = r, center = c)
+                // انعكاس طولي: فاتح من الأعلى اليسار وغامق خفيف من الأسفل اليمين
+                drawCircle(Brush.linearGradient(
+                    listOf(w.copy(0.30f), w.copy(0f), Color.Black.copy(0.16f)),
+                    start = Offset(c.x - r * 0.7f, c.y - r), end = Offset(c.x + r * 0.7f, c.y + r)), radius = r, center = c)
+                // حلقة الانكسار الداخلية عند الحافة
+                drawCircle(Brush.radialGradient(
+                    colorStops = arrayOf(0.76f to w.copy(0f), 0.92f to w.copy(0.10f), 1f to w.copy(0.30f)),
+                    center = c, radius = r), radius = r, center = c)
+                // لمعة علوية (انعكاس الضوء) ولمعة سفلية أخف
+                drawOval(Brush.radialGradient(listOf(w.copy(0.62f + 0.2f * glow), w.copy(0f)),
+                    center = Offset(c.x - r * 0.12f, c.y - r * 0.64f), radius = r * 0.62f),
+                    topLeft = Offset(c.x - r * 0.6f, c.y - r * 0.9f), size = Size(r * 1.2f, r * 0.52f))
+                drawOval(Brush.radialGradient(listOf(w.copy(0.26f), w.copy(0f)),
+                    center = Offset(c.x + r * 0.22f, c.y + r * 0.7f), radius = r * 0.5f),
+                    topLeft = Offset(c.x - r * 0.5f, c.y + r * 0.5f), size = Size(r * 1.0f, r * 0.38f))
+                // وميض عند اللمس
+                if (glow > 0.01f) drawCircle(w.copy(0.10f * glow), radius = r, center = c)
+                // الحافة: خيط مضيء قوي بالأعلى اليسار والأسفل اليمين وخافت بالجهتين الثانيتين
+                drawCircle(Brush.sweepGradient(
+                    colorStops = arrayOf(0f to w.copy(0.35f), 0.125f to w.copy(0.92f), 0.25f to w.copy(0.22f), 0.5f to w.copy(0.20f),
+                        0.625f to w.copy(0.98f), 0.75f to w.copy(0.28f), 1f to w.copy(0.35f)), center = c),
+                    radius = r - 0.75.dp.toPx(), center = c, style = androidx.compose.ui.graphics.drawscope.Stroke(1.5.dp.toPx()))
+            }
+            .pointerInput(Unit) {
+                detectTapGestures(onPress = { pressed = true; tryAwaitRelease(); pressed = false }, onTap = { onClick() })
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        // تبدّل الأيقونتين بحركة زنبركية (تدور وتصغر وتتلاشى)
+        val isz = diameter * 0.44f
+        Icon(IPlay, contentDescription = null, tint = Color.White.copy(0.96f),
+            modifier = Modifier.size(isz).graphicsLayer {
+                alpha = (1f - pp).coerceIn(0f, 1f); scaleX = 1f - 0.35f * pp; scaleY = 1f - 0.35f * pp; rotationZ = 45f * pp
+            })
+        Icon(IPause, contentDescription = null, tint = Color.White.copy(0.96f),
+            modifier = Modifier.size(isz).graphicsLayer {
+                alpha = pp.coerceIn(0f, 1f); scaleX = 0.65f + 0.35f * pp; scaleY = 0.65f + 0.35f * pp; rotationZ = -45f * (1f - pp)
+            })
+    }
+}
+
 // يوسّع العنصر لحافتي الشاشة (يتجاوز هامش الأب الأفقي) عشان ما ينقص طرفه عند الحواف
 fun Modifier.bleed(extra: androidx.compose.ui.unit.Dp): Modifier = this.layout { m, c ->
     val e = extra.roundToPx()
@@ -2747,14 +2810,12 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                             ) {
                             player?.let { GlassSeek(it, { uiTick++ }) }
                             }
-                            // زر التشغيل/الإيقاف: دائري شفاف بمنتصف الشاشة
-                            Box(
-                                Modifier.align(Alignment.Center).size(84.dp).liveGlass(42.dp) {
-                                    uiTick++
-                                    player?.let { if (it.isPlaying) it.pause() else it.play() }
-                                },
-                                contentAlignment = Alignment.Center
-                            ) { Icon(if (playing) IPause else IPlay, contentDescription = null, tint = Color.White, modifier = Modifier.size(38.dp)) }
+                            // زر التشغيل/الإيقاف: زجاج سائل بأسلوب أبل بمنتصف الشاشة
+                            LiquidPlayButton(playing, Modifier.align(Alignment.Center), 88.dp) {
+                                buzz(hapticView, false)
+                                uiTick++
+                                player?.let { if (it.isPlaying) it.pause() else it.play() }
+                            }
                         }
 
                     }
