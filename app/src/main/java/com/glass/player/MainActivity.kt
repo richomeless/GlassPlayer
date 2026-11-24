@@ -1171,6 +1171,8 @@ val IMore = mkIcon("M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0
 val IHead = mkIcon("M12 1c-4.97 0-9 4.03-9 9v7c0 1.66 1.34 3 3 3h3v-8H5v-2c0-3.87 3.13-7 7-7s7 3.13 7 7v2h-4v8h3c1.66 0 3-1.34 3-3v-7c0-4.97-4.03-9-9-9z")
 val IRew = mkIcon("M11 18V6l-8.5 6 8.5 6zm.5-6l8.5 6V6l-8.5 6z")
 val IFwd = mkIcon("M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z")
+val ISpeed = mkIcon("M20.38 8.57l-1.23 1.85a8 8 0 0 1-.22 7.58H5.07A8 8 0 0 1 15.58 6.85l1.85-1.23A10 10 0 0 0 3.35 19a2 2 0 0 0 1.72 1h13.85a2 2 0 0 0 1.74-1 10 10 0 0 0-.27-10.44zm-9.79 6.84a2 2 0 0 0 2.83 0l5.66-8.49-8.49 5.66a2 2 0 0 0 0 2.83z")
+val ITouch = mkIcon("M9 11.24V7.5a2.5 2.5 0 0 1 5 0v3.74c1.21-.81 2-2.18 2-3.74C16 5.01 13.99 3 11.5 3S7 5.01 7 7.5c0 1.56.79 2.93 2 3.74zm9.84 4.63l-4.54-2.26c-.17-.07-.35-.11-.54-.11H13v-6c0-.83-.67-1.5-1.5-1.5S10 6.67 10 7.5v10.74l-3.43-.72c-.08-.01-.15-.03-.24-.03-.31 0-.59.13-.79.33l-.79.8 4.94 4.94c.27.27.65.44 1.06.44h6.79c.75 0 1.33-.55 1.44-1.28l.75-5.27c.01-.07.02-.14.02-.2 0-.62-.38-1.16-.91-1.38z")
 
 fun fmtDur(ms: Long): String {
     val s = (ms.coerceAtLeast(0L) / 1000L)
@@ -1306,6 +1308,18 @@ fun PlayButton(playing: Boolean, modifier: Modifier = Modifier, diameter: Dp = 8
         Icon(if (playing) IPause else IPlay, contentDescription = null, tint = Color.White,
             modifier = Modifier.size(diameter * 0.46f))
     }
+}
+
+// أيقونة داخل قائمة الثلاث نقاط: مضيئة لو الخيار شغّال، وخافتة لو مطفي
+@Composable
+fun MenuIcon(icon: ImageVector, on: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier.size(46.dp)
+            .background(if (on) Color.White.copy(0.16f) else Color.Transparent, CircleShape)
+            .clip(CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) { Icon(icon, contentDescription = null, tint = Color.White.copy(if (on) 1f else 0.45f), modifier = Modifier.size(24.dp)) }
 }
 
 // يوسّع العنصر لحافتي الشاشة (يتجاوز هامش الأب الأفقي) عشان ما ينقص طرفه عند الحواف
@@ -1885,7 +1899,7 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
         trace("start(${c.name}) closing=$closing")
         if (closing) return
         error = null; qSel = null; vh = 0; ui = true; zoom = 1f; panX = 0f; panY = 0f; speed = 1f
-        arForced = store.arFlip(c.url)
+        arForced = false
         store.bumpCount(c.url)
         val savedPos = store.pos(c.url)
         resumeAsk = if (savedPos > 60_000L) savedPos else 0L
@@ -1906,7 +1920,8 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                 p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
                     .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false).build()
             }
-            p.setMediaItem(item, store.pos(c.url))
+            // المقاطع القصيرة (أو لو الموضع المحفوظ أقل من دقيقة) تبدأ من البداية
+            p.setMediaItem(item, if (savedPos > 60_000L) savedPos else 0L)
             p.setPlaybackSpeed(1f)
             p.prepare(); p.play()
         }
@@ -1994,7 +2009,7 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
             val ch = Channel(md.title?.toString() ?: "فيديو", mi.localConfiguration?.uri?.toString() ?: "")
             trace("resume video from notification: ${ch.name}")
             error = null; qSel = null; vh = 0; ui = true; zoom = 1f; panX = 0f; panY = 0f
-            arForced = store.arFlip(ch.url)
+            arForced = false
             val dm = ctx.resources.displayMetrics
             val cx = dm.widthPixels / 2f; val cy = dm.heightPixels / 2f
             origin = Rect(cx - 80f, cy - 80f, cx + 80f, cy + 80f)
@@ -2757,26 +2772,40 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                                 // ثلاث نقاط: الإيماءات (خيار وحد)، السرعة، وضع الخروج (PiP / صوت بالخلفية)، نسبة الشاشة
                                 Box {
                                     GlassButton("⋮", Modifier.width(64.dp)) { uiTick++; buzz(hapticView, false); menuPage = 0; menu = true }
-                                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                                        if (menuPage == 0) {
-                                            DropdownMenuItem(
-                                                text = { Text(if (swipeOn) "✓  إيماءات التقديم والصوت والسطوع" else "إيماءات التقديم والصوت والسطوع (معطّلة)") },
-                                                onClick = { swipeOn = !swipeOn; store.setSwipeGestures(swipeOn); menu = false })
-                                            DropdownMenuItem(text = { Text("السرعة: ${fmtSpeed(speed)}") }, onClick = { menuPage = 1 })
-                                            DropdownMenuItem(
-                                                text = { Text(if (pipMode) "عند الخروج: صورة مصغّرة (PiP)" else "عند الخروج: صوت بالخلفية") },
-                                                onClick = { pipMode = !pipMode; store.setPipMode(pipMode); menu = false })
-                                            DropdownMenuItem(text = { Text("تبديل نسبة الشاشة (16:9 / 4:3)") }, onClick = {
-                                                uiTick++; buzz(hapticView, false)
-                                                arForced = !arForced
-                                                store.setArFlip(c.url, arForced)
-                                                zoom = 1f; panX = 0f; panY = 0f
-                                                menu = false
-                                            })
-                                        } else {
-                                            listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f).forEach { sp ->
-                                                DropdownMenuItem(text = { Text(if (sp == speed) "✓  ${fmtSpeed(sp)}" else fmtSpeed(sp)) },
-                                                    onClick = { speed = sp; player?.setPlaybackSpeed(sp); menu = false })
+                                    if (menu) androidx.compose.ui.window.Popup(
+                                        alignment = Alignment.TopEnd,
+                                        offset = androidx.compose.ui.unit.IntOffset(0, with(androidx.compose.ui.platform.LocalDensity.current) { 60.dp.roundToPx() }),
+                                        onDismissRequest = { menu = false },
+                                        properties = androidx.compose.ui.window.PopupProperties(focusable = true)
+                                    ) {
+                                        val vis = remember { androidx.compose.animation.core.MutableTransitionState(false) }.apply { targetState = true }
+                                        androidx.compose.animation.AnimatedVisibility(
+                                            visibleState = vis,
+                                            enter = androidx.compose.animation.fadeIn(tween(140)) + androidx.compose.animation.scaleIn(
+                                                tween(200), initialScale = 0.85f,
+                                                transformOrigin = androidx.compose.ui.graphics.TransformOrigin(1f, 0f))
+                                        ) {
+                                            Row(
+                                                Modifier.background(Color.Black.copy(0.55f), RoundedCornerShape(26.dp)).glass(26.dp).padding(6.dp),
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                if (menuPage == 0) {
+                                                    MenuIcon(ITouch, on = swipeOn) { buzz(hapticView, false); swipeOn = !swipeOn; store.setSwipeGestures(swipeOn); menu = false }
+                                                    MenuIcon(ISpeed, on = speed != 1f) { buzz(hapticView, false); menuPage = 1 }
+                                                    MenuIcon(if (pipMode) IPip else IHead, on = true) { buzz(hapticView, false); pipMode = !pipMode; store.setPipMode(pipMode); menu = false }
+                                                } else {
+                                                    MenuIcon(ISpeed, on = false) { buzz(hapticView, false); menuPage = 0 }
+                                                    listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f).forEach { sp ->
+                                                        Box(
+                                                            Modifier.height(44.dp).widthIn(min = 44.dp)
+                                                                .background(if (sp == speed) Color.White.copy(0.22f) else Color.Transparent, RoundedCornerShape(20.dp))
+                                                                .clip(RoundedCornerShape(20.dp))
+                                                                .clickable { buzz(hapticView, false); speed = sp; player?.setPlaybackSpeed(sp); menu = false }
+                                                                .padding(horizontal = 8.dp),
+                                                            contentAlignment = Alignment.Center
+                                                        ) { Text(fmtSpeed(sp), color = Color.White, fontSize = 13.sp, fontWeight = if (sp == speed) FontWeight.Bold else FontWeight.Normal, maxLines = 1) }
+                                                    }
+                                                }
                                             }
                                         }
                                     }
