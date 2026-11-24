@@ -1296,144 +1296,15 @@ fun GlassIcon(icon: ImageVector, modifier: Modifier = Modifier, tint: Color = Co
     ) { Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(26.dp)) }
 }
 
-// زر التشغيل/الإيقاف بأسلوب iOS Liquid Glass الحقيقي: عدسة زجاجية سميكة تكسر صورة الفيديو من خلفها
-// (تكبير خفيف بالوسط، وحافة سميكة تنقلب فيها الصورة مع تشتت لوني بسيط)، حافة رفيعة مضيئة، هلال ضوء أسفل داخل الحافة،
-// ومثلث كريمي مدوّر الزوايا. الكسر يشتغل بـ AGSL (أندرويد 13+) على لقطة حية من الفيديو، وغير كذا يطلع زجاج شفاف عادي
-private const val LENS_AGSL = """
-uniform shader img;
-uniform float2 res;
-uniform float2 isz;
-uniform float pxs;
-uniform float press;
-half4 main(float2 p) {
-    float R = res.x * 0.5;
-    float2 q = (p - res * 0.5) / R;
-    float d = length(q);
-    float a = clamp((1.0 - d) * R / 1.5, 0.0, 1.0);
-    if (a <= 0.0) return half4(0.0);
-    float2 dir = d > 0.0001 ? q / d : float2(0.0, 0.0);
-    float t = clamp((d - 0.80) / 0.20, 0.0, 1.0);
-    float rs = d < 0.80 ? d * 0.95 : 0.76 + 0.40 * t - 0.20 * t * t;
-    float disp = 0.008 * t;
-    float2 c = isz * 0.5;
-    float k = R * pxs;
-    half4 cr = img.eval(c + dir * rs * (1.0 - disp) * k);
-    half4 cg = img.eval(c + dir * rs * k);
-    half4 cb = img.eval(c + dir * rs * (1.0 + disp) * k);
-    float3 col = float3(cr.r, cg.g, cb.b);
-    col = col * 0.98 + 0.05 * press;
-    float2 L = normalize(float2(-0.6, -0.8));
-    float lt = max(dot(dir, L), 0.0);
-    float lb = max(dot(dir, -L), 0.0);
-    float outl = smoothstep(0.965, 0.995, d) * (1.0 - smoothstep(0.995, 1.0, d));
-    float inl = smoothstep(0.925, 0.950, d) * (1.0 - smoothstep(0.950, 0.975, d));
-    float gl = smoothstep(0.72, 0.92, d) * (1.0 - smoothstep(0.92, 1.0, d));
-    col *= 1.0 - outl * (0.18 + 0.30 * lt);
-    col += inl * (0.05 + 0.16 * lb + 0.06 * lt);
-    col += gl * smoothstep(0.0, 0.9, max(q.y, 0.0)) * 0.10;
-    col = clamp(col, 0.0, 1.0);
-    return half4(half3(col * a), half(a));
-}
-"""
-
+// زر التشغيل/الإيقاف: زجاجي عادي بنفس أسلوب باقي الأزرار (بدون عدسة ولا شيدر)
 @Composable
-fun LiquidPlayButton(playing: Boolean, modifier: Modifier = Modifier, diameter: Dp = 88.dp,
-                     pv: PlayerView? = null, active: () -> Boolean = { true }, onClick: () -> Unit) {
-    var pressed by remember { mutableStateOf(false) }
-    val sc by animateFloatAsState(if (pressed) 1.10f else 1f, spring(dampingRatio = 0.55f, stiffness = 380f), label = "lqs")
-    val glow by animateFloatAsState(if (pressed) 1f else 0f, tween(180), label = "lqg")
-    val pp by animateFloatAsState(if (playing) 1f else 0f, spring(dampingRatio = 0.8f, stiffness = 420f), label = "lqp")
-    val sw = 960; val sh = 540
-    val lensOk = Build.VERSION.SDK_INT >= 33
-    val frame = remember { android.graphics.Bitmap.createBitmap(sw, sh, android.graphics.Bitmap.Config.ARGB_8888) }
-    var tick by remember { mutableIntStateOf(0) }
-    var have by remember { mutableStateOf(false) }
-    val paint = remember { android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG) }
-    val lens = remember {
-        if (!lensOk) null else try {
-            @Suppress("NewApi")
-            android.graphics.RuntimeShader(LENS_AGSL).also {
-                it.setInputShader("img", android.graphics.BitmapShader(frame, android.graphics.Shader.TileMode.CLAMP, android.graphics.Shader.TileMode.CLAMP))
-            }
-        } catch (_: Throwable) { null }
-    }
-    // لقطة حية من الفيديو (~12 مرة بالثانية) وبس وقت ظهور الأزرار
-    LaunchedEffect(pv, lens) {
-        if (pv == null || lens == null) return@LaunchedEffect
-        while (true) {
-            if (active()) {
-                val tv = pv.videoSurfaceView as? android.view.TextureView
-                if (tv != null && tv.isAvailable && tv.width > 0 && tv.height > 0) {
-                    val ok = try { tv.getBitmap(frame); true } catch (_: Throwable) { false }
-                    if (ok) { have = true; tick++ }
-                }
-            }
-            delay(80)
-        }
-    }
+fun PlayButton(playing: Boolean, modifier: Modifier = Modifier, diameter: Dp = 88.dp, onClick: () -> Unit) {
     Box(
-        modifier.size(diameter).graphicsLayer { scaleX = sc; scaleY = sc }
-            .drawBehind {
-                val r = this.size.minDimension / 2f
-                val c = center
-                val w = Color.White
-                // ظل ناعم تحت العدسة
-                val so = Offset(c.x, c.y + r * 0.10f)
-                drawCircle(Brush.radialGradient(listOf(Color.Black.copy(0.30f), Color.Black.copy(0f)), center = so, radius = r * 1.3f),
-                    radius = r * 1.3f, center = so)
-                val t = tick   // يقرأ الحالة عشان يعاد الرسم مع كل لقطة
-                if (lens != null && have && t >= 0) {
-                    lens.setFloatUniform("res", this.size.width, this.size.height)
-                    lens.setFloatUniform("isz", sw.toFloat(), sh.toFloat())
-                    lens.setFloatUniform("pxs", sw.toFloat() / (pv?.videoSurfaceView?.width ?: 1).coerceAtLeast(1).toFloat())
-                    lens.setFloatUniform("press", glow)
-                    paint.shader = lens
-                    drawIntoCanvas { it.nativeCanvas.drawRect(0f, 0f, this.size.width, this.size.height, paint) }
-                } else {
-                    // بدون كسر: زجاج دخاني شفاف + حافة مضيئة
-                    drawCircle(Color.Black.copy(0.24f), radius = r, center = c)
-                    drawCircle(Brush.linearGradient(listOf(w.copy(0.20f + 0.1f * glow), w.copy(0.05f), w.copy(0.12f)),
-                        start = Offset(c.x - r, c.y - r), end = Offset(c.x + r, c.y + r)), radius = r, center = c)
-                    drawCircle(Brush.sweepGradient(
-                        colorStops = arrayOf(0f to w.copy(0.30f), 0.125f to w.copy(0.80f), 0.25f to w.copy(0.26f), 0.5f to w.copy(0.24f),
-                            0.625f to w.copy(0.95f), 0.75f to w.copy(0.28f), 1f to w.copy(0.30f)), center = c),
-                        radius = r - 0.6.dp.toPx(), center = c, style = androidx.compose.ui.graphics.drawscope.Stroke(1.2.dp.toPx()))
-                }
-            }
-            .pointerInput(Unit) {
-                detectTapGestures(onPress = { pressed = true; tryAwaitRelease(); pressed = false }, onTap = { onClick() })
-            },
+        modifier.size(diameter).liveGlass(diameter / 2, onClick),
         contentAlignment = Alignment.Center
     ) {
-        // مثلث كريمي مدوّر الزوايا (حجمه ~44% من القطر ومزاح شوي لليمين مثل آبل)، وعمودا إيقاف مدوّرين
-        androidx.compose.foundation.Canvas(Modifier.fillMaxSize()) {
-            val D = size.minDimension
-            val c = center
-            val p = pp
-            val glowR = D * 0.40f
-            drawCircle(Brush.radialGradient(listOf(Color.White.copy(0.16f), Color.White.copy(0f)), center = c, radius = glowR), radius = glowR, center = c)
-            val cream = Brush.linearGradient(listOf(Color(0xFFFFE8D2), Color(0xFFFFF8F0)),
-                start = Offset(c.x - D * 0.2f, c.y - D * 0.22f), end = Offset(c.x + D * 0.1f, c.y + D * 0.22f))
-            if (p < 0.99f) scale(1f - 0.30f * p, 1f - 0.30f * p, pivot = c) {
-                val W = D * 0.40f; val H = D * 0.44f; val stw = D * 0.12f
-                val cx = c.x + D * 0.045f
-                val path = Path().apply {
-                    moveTo(cx - (W - stw) / 2f, c.y - (H - stw) / 2f)
-                    lineTo(cx - (W - stw) / 2f, c.y + (H - stw) / 2f)
-                    lineTo(cx + (W - stw) / 2f, c.y)
-                    close()
-                }
-                drawPath(path, cream, alpha = 0.97f * (1f - p))
-                drawPath(path, cream, alpha = 0.97f * (1f - p), style = androidx.compose.ui.graphics.drawscope.Stroke(stw,
-                    join = androidx.compose.ui.graphics.StrokeJoin.Round, cap = androidx.compose.ui.graphics.StrokeCap.Round))
-            }
-            if (p > 0.01f) scale(0.70f + 0.30f * p, 0.70f + 0.30f * p, pivot = c) {
-                val bw = D * 0.11f; val bh = D * 0.40f; val gap = D * 0.10f
-                val cr = CornerRadius(bw * 0.38f)
-                drawRoundRect(cream, Offset(c.x - gap / 2f - bw, c.y - bh / 2f), Size(bw, bh), cr, alpha = 0.97f * p)
-                drawRoundRect(cream, Offset(c.x + gap / 2f, c.y - bh / 2f), Size(bw, bh), cr, alpha = 0.97f * p)
-            }
-        }
+        Icon(if (playing) IPause else IPlay, contentDescription = null, tint = Color.White,
+            modifier = Modifier.size(diameter * 0.46f))
     }
 }
 
@@ -2918,8 +2789,8 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                             ) {
                             player?.let { GlassSeek(it, { uiTick++ }) }
                             }
-                            // زر التشغيل/الإيقاف: زجاج سائل بأسلوب أبل بمنتصف الشاشة
-                            LiquidPlayButton(playing, Modifier.align(Alignment.Center), 96.dp, pv = pvRef, active = { uiAlpha > 0.05f }) {
+                            // زر التشغيل/الإيقاف بمنتصف الشاشة
+                            PlayButton(playing, Modifier.align(Alignment.Center), 88.dp) {
                                 buzz(hapticView, false)
                                 uiTick++
                                 player?.let { if (it.isPlaying) it.pause() else it.play() }
