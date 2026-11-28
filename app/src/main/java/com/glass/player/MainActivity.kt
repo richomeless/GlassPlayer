@@ -2485,7 +2485,7 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                                         if (!vert) {
                                             val pl = player
                                             if (pl != null && pl.duration > 0L) {
-                                                mode = 6; seekBase = pl.currentPosition; seekSpan = minOf(180_000L, pl.duration); seekTarget = seekBase
+                                                mode = 6; seekBase = pl.currentPosition; seekSpan = minOf(if (full) 100_000L else 55_000L, pl.duration)   // مدى السحبة على عرض الشاشة كاملة: 55 ثانية بالطولي و100 بالفل سكرين; seekTarget = seekBase
                                             }
                                         } else if (edgeZ > 0) {
                                             mode = 4; vBase = audio.getStreamVolume(android.media.AudioManager.STREAM_MUSIC).toFloat() /
