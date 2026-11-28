@@ -1370,32 +1370,22 @@ fun PlayButton(playing: Boolean, modifier: Modifier = Modifier, diameter: Dp = 8
     }
 }
 
-// أيقونة داخل قائمة الثلاث نقاط: مضيئة لو الخيار شغّال، وخافتة لو مطفي. ضغطة طويلة تظهر اسم الزر
+// أيقونة داخل قائمة الثلاث نقاط: مضيئة لو الخيار شغّال، وخافتة لو مطفي. ضغطة طويلة ترسل اسم الزر لسطر الاسم تحت القائمة
+// (الاسم يُرسم داخل نفس نافذة القائمة: النافذة المتداخلة كانت تنحسب إحداثياتها من بداية نافذة القائمة فتطلع بيسار الشاشة)
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun MenuIcon(icon: ImageVector, label: String, on: Boolean, onClick: () -> Unit) {
-    var showLabel by remember { mutableStateOf(false) }
+fun MenuIcon(icon: ImageVector, label: String, on: Boolean, onHint: (String) -> Unit, onClick: () -> Unit) {
     val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
-    LaunchedEffect(showLabel) { if (showLabel) { delay(1400); showLabel = false } }
     Box(
         Modifier.size(46.dp)
             .background(if (on) Color.White.copy(0.16f) else Color.Transparent, CircleShape)
             .clip(CircleShape)
             .combinedClickable(
                 onClick = onClick,
-                onLongClick = { haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress); showLabel = true }
+                onLongClick = { haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress); onHint(label) }
             ),
         contentAlignment = Alignment.Center
-    ) {
-        Icon(icon, contentDescription = label, tint = Color.White.copy(if (on) 1f else 0.45f), modifier = Modifier.size(24.dp))
-        if (showLabel) androidx.compose.ui.window.Popup(
-            alignment = Alignment.BottomCenter,
-            offset = androidx.compose.ui.unit.IntOffset(0, with(androidx.compose.ui.platform.LocalDensity.current) { 40.dp.roundToPx() })
-        ) {
-            Text(label, color = Color.White, fontSize = 12.sp, maxLines = 1,
-                modifier = Modifier.background(Color.Black.copy(0.8f), RoundedCornerShape(12.dp)).padding(horizontal = 10.dp, vertical = 5.dp))
-        }
-    }
+    ) { Icon(icon, contentDescription = label, tint = Color.White.copy(if (on) 1f else 0.45f), modifier = Modifier.size(24.dp)) }
 }
 
 // يوسّع العنصر لحافتي الشاشة (يتجاوز هامش الأب الأفقي) عشان ما ينقص طرفه عند الحواف
@@ -1791,6 +1781,8 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
     var pipMode by remember { mutableStateOf(store.pipMode()) }
     var menu by remember { mutableStateOf(false) }
     LaunchedEffect(uiAlpha < 0.5f) { if (uiAlpha < 0.5f) menu = false }   // القائمة نافذة مستقلة: تنقفل مع اختفاء الأزرار
+    var hint by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(hint) { if (hint != null) { delay(1400); hint = null } }
     var menuPage by remember { mutableIntStateOf(0) }       // 0 القائمة الرئيسية، 1 اختيار السرعة
     var swipeOn by remember { mutableStateOf(store.swipeGestures()) }
     var hud by remember { mutableIntStateOf(0) }            // 0 لا شي، 1 صوت، 2 سطوع، 3 تقديم/تأخير
@@ -2876,27 +2868,34 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                                                 tween(150), targetScale = 0.85f,
                                                 transformOrigin = androidx.compose.ui.graphics.TransformOrigin(1f, 0f))
                                         ) {
+                                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                             Row(
                                                 Modifier.background(Color.Black.copy(0.55f), RoundedCornerShape(26.dp)).glass(26.dp).padding(6.dp),
                                                 horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically
                                             ) {
                                                 if (menuPage == 0) {
-                                                    MenuIcon(ITouch, "الإيماءات", on = swipeOn) { buzz(hapticView, false); swipeOn = !swipeOn; store.setSwipeGestures(swipeOn); menu = false }
-                                                    MenuIcon(ISpeed, "السرعة", on = speed != 1f) { buzz(hapticView, false); menuPage = 1 }
-                                                    MenuIcon(if (pipMode) IPip else IHead, if (pipMode) "نافذة عائمة" else "صوت بالخلفية", on = true) { buzz(hapticView, false); pipMode = !pipMode; store.setPipMode(pipMode); menu = false }
+                                                    MenuIcon(ITouch, "الإيماءات", on = swipeOn, onHint = { hint = it }) { buzz(hapticView, false); swipeOn = !swipeOn; store.setSwipeGestures(swipeOn) }
+                                                    MenuIcon(ISpeed, "السرعة", on = speed != 1f, onHint = { hint = it }) { buzz(hapticView, false); menuPage = 1 }
+                                                    MenuIcon(if (pipMode) IPip else IHead, if (pipMode) "نافذة عائمة" else "صوت بالخلفية", on = true, onHint = { hint = it }) { buzz(hapticView, false); pipMode = !pipMode; store.setPipMode(pipMode) }
                                                 } else {
-                                                    MenuIcon(ISpeed, "السرعة", on = false) { buzz(hapticView, false); menuPage = 0 }
+                                                    MenuIcon(ISpeed, "السرعة", on = false, onHint = { hint = it }) { buzz(hapticView, false); menuPage = 0 }
                                                     listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f).forEach { sp ->
                                                         Box(
                                                             Modifier.height(44.dp).widthIn(min = 44.dp)
                                                                 .background(if (sp == speed) Color.White.copy(0.22f) else Color.Transparent, RoundedCornerShape(20.dp))
                                                                 .clip(RoundedCornerShape(20.dp))
-                                                                .clickable { buzz(hapticView, false); speed = sp; player?.setPlaybackSpeed(sp); menu = false }
+                                                                .clickable { buzz(hapticView, false); speed = sp; player?.setPlaybackSpeed(sp) }
                                                                 .padding(horizontal = 8.dp),
                                                             contentAlignment = Alignment.Center
                                                         ) { Text(fmtSpeed(sp), color = Color.White, fontSize = 13.sp, fontWeight = if (sp == speed) FontWeight.Bold else FontWeight.Normal, maxLines = 1) }
                                                     }
                                                 }
+                                            }
+                                            hint?.let { h ->
+                                                Text(h, color = Color.White, fontSize = 12.sp, maxLines = 1,
+                                                    modifier = Modifier.padding(top = 6.dp)
+                                                        .background(Color.Black.copy(0.8f), RoundedCornerShape(12.dp)).padding(horizontal = 10.dp, vertical = 5.dp))
+                                            }
                                             }
                                         }
                                     }
