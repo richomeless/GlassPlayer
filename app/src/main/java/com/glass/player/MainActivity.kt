@@ -1306,6 +1306,11 @@ fun loadArtwork(ctx: android.content.Context, uri: String): ByteArray? {
     }
     if (bmp == null) return null
     return try {
+        // نقصّها مربعة من الوسط: الجزيرة/الشريط العلوي يعرض الغلاف بمربع صغير، والصورة العريضة كانت تنضغط
+        val side = minOf(bmp.width, bmp.height)
+        if (bmp.width != bmp.height) {
+            bmp = android.graphics.Bitmap.createBitmap(bmp, (bmp.width - side) / 2, (bmp.height - side) / 2, side, side)
+        }
         val out = java.io.ByteArrayOutputStream()
         bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 88, out)
         out.toByteArray()
@@ -2851,7 +2856,7 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                             player?.let { GlassSeek(it, { uiTick++ }) }
                             }
                             // زر التشغيل/الإيقاف بمنتصف الشاشة
-                            PlayButton(playing, Modifier.align(Alignment.Center), 88.dp) {
+                            PlayButton(playing, Modifier.align(Alignment.Center), if (winPortraitNow) 62.dp else 88.dp) {
                                 buzz(hapticView, false)
                                 uiTick++
                                 player?.let { if (it.isPlaying) it.pause() else it.play() }
