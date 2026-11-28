@@ -1290,6 +1290,28 @@ fun rememberThumb(uri: String): ImageBitmap? {
     return bmp
 }
 
+// لقطة الفيديو كبيانات JPEG للإشعار (فيديوهات الجوال فقط؛ روابط الويب ما لها صورة)
+fun loadArtwork(ctx: android.content.Context, uri: String): ByteArray? {
+    if (!uri.startsWith("content://") && !uri.startsWith("file://")) return null
+    val u = android.net.Uri.parse(uri)
+    var bmp: android.graphics.Bitmap? = try {
+        ctx.contentResolver.loadThumbnail(u, android.util.Size(720, 720), null)
+    } catch (_: Throwable) { null }
+    if (bmp == null) {
+        val r = android.media.MediaMetadataRetriever()
+        try {
+            r.setDataSource(ctx, u)
+            bmp = r.getFrameAtTime(1_000_000L, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+        } catch (_: Throwable) {} finally { try { r.release() } catch (_: Throwable) {} }
+    }
+    if (bmp == null) return null
+    return try {
+        val out = java.io.ByteArrayOutputStream()
+        bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 88, out)
+        out.toByteArray()
+    } catch (_: Throwable) { null }
+}
+
 @Composable
 fun GlassIcon(icon: ImageVector, modifier: Modifier = Modifier, tint: Color = Color.White, onClick: () -> Unit) {
     Box(
@@ -1924,6 +1946,16 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
             p.setMediaItem(item, if (savedPos > 60_000L) savedPos else 0L)
             p.setPlaybackSpeed(1f)
             p.prepare(); p.play()
+            // صورة الفيديو المصغّرة تظهر بإشعار التشغيل: نجهزها بالخلفية ثم نحدّث بيانات العنصر بدون ما يتأثر التشغيل
+            val uriStr = c.url
+            scope.launch {
+                val art = withContext(Dispatchers.IO) { loadArtwork(ctx, uriStr) } ?: return@launch
+                val cur0 = p.currentMediaItem ?: return@launch
+                if (cur0.localConfiguration?.uri?.toString() != uriStr) return@launch
+                val md2 = cur0.mediaMetadata.buildUpon()
+                    .setArtworkData(art, MediaMetadata.PICTURE_TYPE_FRONT_COVER).build()
+                try { p.replaceMediaItem(p.currentMediaItemIndex, cur0.buildUpon().setMediaMetadata(md2).build()) } catch (_: Throwable) {}
+            }
         }
     }
 
