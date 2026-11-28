@@ -736,6 +736,31 @@ object Hap {
     fun scrollAllowed(): Boolean = all && scroll
 }
 
+// هزة واضحة لكل خطوة تقديم/ترجيع بالسحب: اهتزاز مباشر من الجهاز (مو هزة اللمس العادية اللي ممكن تنكتم)، وخطة بديلة بهزة النظام
+fun seekTick(v: View) {
+    if (!Hap.allowed()) return
+    var done = false
+    try {
+        var vib = softVib
+        if (vib == null) {
+            val ctx = v.context
+            vib = if (Build.VERSION.SDK_INT >= 31) ctx.getSystemService(android.os.VibratorManager::class.java).defaultVibrator
+                  else @Suppress("DEPRECATION") ctx.getSystemService(Context.VIBRATOR_SERVICE) as android.os.Vibrator
+            softVib = vib
+        }
+        if (vib != null && vib.hasVibrator()) {
+            val effect = if (Build.VERSION.SDK_INT >= 29) android.os.VibrationEffect.createPredefined(android.os.VibrationEffect.EFFECT_CLICK)
+                         else android.os.VibrationEffect.createOneShot(14L, 120)
+            if (Build.VERSION.SDK_INT >= 33) vib.vibrate(effect, android.os.VibrationAttributes.createForUsage(android.os.VibrationAttributes.USAGE_TOUCH))
+            else @Suppress("DEPRECATION") vib.vibrate(effect, android.media.AudioAttributes.Builder()
+                .setUsage(android.media.AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
+            done = true
+        }
+    } catch (_: Throwable) {}
+    if (!done) try { v.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK) } catch (_: Throwable) {}
+}
+
 // نقرة ناعمة لتأثير برايل: PRIMITIVE_LOW_TICK بقوة متوسطة-منخفضة، أو نبضة قصيرة بسعة ضعيفة، مع تصنيفها كلمس عشان النظام ما يكتمها
 private var softVib: android.os.Vibrator? = null
 private var softPrim = false
@@ -2511,8 +2536,8 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                                             val dur = player?.duration ?: 0L
                                             val t = (seekBase + (ax / picWd * seekSpan).toLong()).coerceIn(0L, if (dur > 0L) dur else seekBase)
                                             seekTarget = t
-                                            val si = ((t - seekBase) / 10_000L).toInt()
-                                            if (si != hIdx) { if (hIdx != Int.MIN_VALUE) buzz(hapticView, false); hIdx = si }
+                                            val si = Math.floorDiv(t - seekBase, 2_500L).toInt()   // هزة كل 2.5 ثانية تقديم أو ترجيع
+                                            if (si != hIdx) { if (hIdx != Int.MIN_VALUE) seekTick(hapticView); hIdx = si }
                                             hud = 3; hudText = (if (t >= seekBase) "+" else "-") + fmtDur(kotlin.math.abs(t - seekBase)) + "   ·   " + fmtDur(t)
                                         }
                                     }
