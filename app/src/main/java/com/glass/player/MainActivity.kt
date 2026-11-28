@@ -295,6 +295,11 @@ class MainActivity : ComponentActivity() {
 
     private fun setVideo(on: Boolean) {
         controller.value?.let { c ->
+            // تبديل مسار الفيديو يقطع الصوت لحظة ويظهر إطار مضغوط عند الرجوع، فما نلمسه إلا لو الفيديو رابط ويب (نوفّر النت)
+            // الفيديوهات المحلية تكمل بدون عرض بالخلفية: السطح ينهدم لحاله والصوت ما ينقطع
+            val web = c.currentMediaItem?.localConfiguration?.uri?.scheme?.startsWith("http") == true
+            if (!on && !web) return
+            if (c.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_VIDEO) == !on) return
             c.trackSelectionParameters = c.trackSelectionParameters.buildUpon()
                 .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, !on).build()
         }
@@ -1306,13 +1311,41 @@ fun loadArtwork(ctx: android.content.Context, uri: String): ByteArray? {
     }
     if (bmp == null) return null
     return try {
-        // نقصّها مربعة من الوسط: الجزيرة/الشريط العلوي يعرض الغلاف بمربع صغير، والصورة العريضة كانت تنضغط
-        val side = minOf(bmp.width, bmp.height)
-        if (bmp.width != bmp.height) {
-            bmp = android.graphics.Bitmap.createBitmap(bmp, (bmp.width - side) / 2, (bmp.height - side) / 2, side, side)
-        }
+        // غلاف مربع: الصورة كاملة بالوسط وشريط بلون حافة الصورة (متدرّج للأغمق) من الجهتين، عشان لا ينقص منها شي ولا تنضغط
+        if (bmp.config == android.graphics.Bitmap.Config.HARDWARE) bmp = bmp.copy(android.graphics.Bitmap.Config.ARGB_8888, false)
+        val src = bmp!!
+        val side = 720
+        val sc = side.toFloat() / maxOf(src.width, src.height)
+        val w = (src.width * sc).toInt().coerceAtLeast(1); val h = (src.height * sc).toInt().coerceAtLeast(1)
+        val scaled = android.graphics.Bitmap.createScaledBitmap(src, w, h, true)
+        val sq = android.graphics.Bitmap.createBitmap(side, side, android.graphics.Bitmap.Config.ARGB_8888)
+        val cv = android.graphics.Canvas(sq)
+        fun avg(x: Int, y: Int, cw: Int, ch: Int): Int =
+            android.graphics.Bitmap.createScaledBitmap(android.graphics.Bitmap.createBitmap(src, x, y, cw.coerceAtLeast(1), ch.coerceAtLeast(1)), 1, 1, true).getPixel(0, 0)
+        fun dark(c: Int, f: Float) = android.graphics.Color.rgb(
+            (android.graphics.Color.red(c) * f).toInt(), (android.graphics.Color.green(c) * f).toInt(), (android.graphics.Color.blue(c) * f).toInt())
+        val pt = android.graphics.Paint()
+        if (h < side) {          // صورة عريضة: شريط فوق وتحت
+            val y0 = (side - h) / 2
+            val strip = (src.height / 8).coerceAtLeast(1)
+            val top = avg(0, 0, src.width, strip); val bot = avg(0, src.height - strip, src.width, strip)
+            pt.shader = android.graphics.LinearGradient(0f, 0f, 0f, y0.toFloat(), dark(top, 0.45f), top, android.graphics.Shader.TileMode.CLAMP)
+            cv.drawRect(0f, 0f, side.toFloat(), y0.toFloat(), pt)
+            pt.shader = android.graphics.LinearGradient(0f, (y0 + h).toFloat(), 0f, side.toFloat(), bot, dark(bot, 0.45f), android.graphics.Shader.TileMode.CLAMP)
+            cv.drawRect(0f, (y0 + h).toFloat(), side.toFloat(), side.toFloat(), pt)
+            cv.drawBitmap(scaled, 0f, y0.toFloat(), null)
+        } else if (w < side) {   // صورة طولية: شريط يمين ويسار
+            val x0 = (side - w) / 2
+            val strip = (src.width / 8).coerceAtLeast(1)
+            val l = avg(0, 0, strip, src.height); val r = avg(src.width - strip, 0, strip, src.height)
+            pt.shader = android.graphics.LinearGradient(0f, 0f, x0.toFloat(), 0f, dark(l, 0.45f), l, android.graphics.Shader.TileMode.CLAMP)
+            cv.drawRect(0f, 0f, x0.toFloat(), side.toFloat(), pt)
+            pt.shader = android.graphics.LinearGradient((x0 + w).toFloat(), 0f, side.toFloat(), 0f, r, dark(r, 0.45f), android.graphics.Shader.TileMode.CLAMP)
+            cv.drawRect((x0 + w).toFloat(), 0f, side.toFloat(), side.toFloat(), pt)
+            cv.drawBitmap(scaled, x0.toFloat(), 0f, null)
+        } else cv.drawBitmap(scaled, 0f, 0f, null)
         val out = java.io.ByteArrayOutputStream()
-        bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 88, out)
+        sq.compress(android.graphics.Bitmap.CompressFormat.JPEG, 88, out)
         out.toByteArray()
     } catch (_: Throwable) { null }
 }
@@ -1337,16 +1370,32 @@ fun PlayButton(playing: Boolean, modifier: Modifier = Modifier, diameter: Dp = 8
     }
 }
 
-// أيقونة داخل قائمة الثلاث نقاط: مضيئة لو الخيار شغّال، وخافتة لو مطفي
+// أيقونة داخل قائمة الثلاث نقاط: مضيئة لو الخيار شغّال، وخافتة لو مطفي. ضغطة طويلة تظهر اسم الزر
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun MenuIcon(icon: ImageVector, on: Boolean, onClick: () -> Unit) {
+fun MenuIcon(icon: ImageVector, label: String, on: Boolean, onClick: () -> Unit) {
+    var showLabel by remember { mutableStateOf(false) }
+    val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
+    LaunchedEffect(showLabel) { if (showLabel) { delay(1400); showLabel = false } }
     Box(
         Modifier.size(46.dp)
             .background(if (on) Color.White.copy(0.16f) else Color.Transparent, CircleShape)
             .clip(CircleShape)
-            .clickable(onClick = onClick),
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = { haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress); showLabel = true }
+            ),
         contentAlignment = Alignment.Center
-    ) { Icon(icon, contentDescription = null, tint = Color.White.copy(if (on) 1f else 0.45f), modifier = Modifier.size(24.dp)) }
+    ) {
+        Icon(icon, contentDescription = label, tint = Color.White.copy(if (on) 1f else 0.45f), modifier = Modifier.size(24.dp))
+        if (showLabel) androidx.compose.ui.window.Popup(
+            alignment = Alignment.BottomCenter,
+            offset = androidx.compose.ui.unit.IntOffset(0, with(androidx.compose.ui.platform.LocalDensity.current) { 40.dp.roundToPx() })
+        ) {
+            Text(label, color = Color.White, fontSize = 12.sp, maxLines = 1,
+                modifier = Modifier.background(Color.Black.copy(0.8f), RoundedCornerShape(12.dp)).padding(horizontal = 10.dp, vertical = 5.dp))
+        }
+    }
 }
 
 // يوسّع العنصر لحافتي الشاشة (يتجاوز هامش الأب الأفقي) عشان ما ينقص طرفه عند الحواف
@@ -1741,6 +1790,7 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
     var speed by remember { mutableStateOf(1f) }
     var pipMode by remember { mutableStateOf(store.pipMode()) }
     var menu by remember { mutableStateOf(false) }
+    LaunchedEffect(uiAlpha < 0.5f) { if (uiAlpha < 0.5f) menu = false }   // القائمة نافذة مستقلة: تنقفل مع اختفاء الأزرار
     var menuPage by remember { mutableIntStateOf(0) }       // 0 القائمة الرئيسية، 1 اختيار السرعة
     var swipeOn by remember { mutableStateOf(store.swipeGestures()) }
     var hud by remember { mutableIntStateOf(0) }            // 0 لا شي، 1 صوت، 2 سطوع، 3 تقديم/تأخير
@@ -2809,17 +2859,21 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                                 // ثلاث نقاط: الإيماءات (خيار وحد)، السرعة، وضع الخروج (PiP / صوت بالخلفية)، نسبة الشاشة
                                 Box {
                                     GlassButton("⋮", Modifier.width(64.dp)) { uiTick++; buzz(hapticView, false); menuPage = 0; menu = true }
-                                    if (menu) androidx.compose.ui.window.Popup(
+                                    val vis = remember { androidx.compose.animation.core.MutableTransitionState(false) }
+                                    vis.targetState = menu
+                                    if (menu || vis.currentState || !vis.isIdle) androidx.compose.ui.window.Popup(
                                         alignment = Alignment.TopEnd,
                                         offset = androidx.compose.ui.unit.IntOffset(0, with(androidx.compose.ui.platform.LocalDensity.current) { 60.dp.roundToPx() }),
                                         onDismissRequest = { menu = false },
                                         properties = androidx.compose.ui.window.PopupProperties(focusable = true)
                                     ) {
-                                        val vis = remember { androidx.compose.animation.core.MutableTransitionState(false) }.apply { targetState = true }
                                         androidx.compose.animation.AnimatedVisibility(
                                             visibleState = vis,
                                             enter = androidx.compose.animation.fadeIn(tween(140)) + androidx.compose.animation.scaleIn(
                                                 tween(200), initialScale = 0.85f,
+                                                transformOrigin = androidx.compose.ui.graphics.TransformOrigin(1f, 0f)),
+                                            exit = androidx.compose.animation.fadeOut(tween(120)) + androidx.compose.animation.scaleOut(
+                                                tween(150), targetScale = 0.85f,
                                                 transformOrigin = androidx.compose.ui.graphics.TransformOrigin(1f, 0f))
                                         ) {
                                             Row(
@@ -2827,11 +2881,11 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                                                 horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically
                                             ) {
                                                 if (menuPage == 0) {
-                                                    MenuIcon(ITouch, on = swipeOn) { buzz(hapticView, false); swipeOn = !swipeOn; store.setSwipeGestures(swipeOn); menu = false }
-                                                    MenuIcon(ISpeed, on = speed != 1f) { buzz(hapticView, false); menuPage = 1 }
-                                                    MenuIcon(if (pipMode) IPip else IHead, on = true) { buzz(hapticView, false); pipMode = !pipMode; store.setPipMode(pipMode); menu = false }
+                                                    MenuIcon(ITouch, "الإيماءات", on = swipeOn) { buzz(hapticView, false); swipeOn = !swipeOn; store.setSwipeGestures(swipeOn); menu = false }
+                                                    MenuIcon(ISpeed, "السرعة", on = speed != 1f) { buzz(hapticView, false); menuPage = 1 }
+                                                    MenuIcon(if (pipMode) IPip else IHead, if (pipMode) "نافذة عائمة" else "صوت بالخلفية", on = true) { buzz(hapticView, false); pipMode = !pipMode; store.setPipMode(pipMode); menu = false }
                                                 } else {
-                                                    MenuIcon(ISpeed, on = false) { buzz(hapticView, false); menuPage = 0 }
+                                                    MenuIcon(ISpeed, "السرعة", on = false) { buzz(hapticView, false); menuPage = 0 }
                                                     listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f).forEach { sp ->
                                                         Box(
                                                             Modifier.height(44.dp).widthIn(min = 44.dp)
