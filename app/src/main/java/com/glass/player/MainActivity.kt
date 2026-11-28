@@ -2485,7 +2485,7 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                                         if (!vert) {
                                             val pl = player
                                             if (pl != null && pl.duration > 0L) {
-                                                mode = 6; seekBase = pl.currentPosition; seekSpan = minOf(if (full) 100_000L else 55_000L, pl.duration)   // مدى السحبة على عرض الشاشة كاملة: 55 ثانية بالطولي و100 بالفل سكرين; seekTarget = seekBase
+                                                mode = 6; seekBase = pl.currentPosition; seekSpan = minOf(if (full) 100_000L else 55_000L, pl.duration); seekTarget = seekBase   // مدى السحبة على عرض الشاشة كاملة: 55 ثانية بالطولي و100 بالفل سكرين
                                             }
                                         } else if (edgeZ > 0) {
                                             mode = 4; vBase = audio.getStreamVolume(android.media.AudioManager.STREAM_MUSIC).toFloat() /
@@ -2526,9 +2526,11 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                                             hud = 1; hudLevel = lv
                                         }
                                         5 -> {
-                                            val lv = (bBase - ay / (picH * 0.7f)).coerceIn(0.02f, 1f)
+                                            val raw = bBase - ay / (picH * 0.7f)
+                                            val lv = raw.coerceIn(0.02f, 1f)
                                             setBright(lv)
-                                            val bi = (lv * 20f).toInt()
+                                            // الخطوة تُحسب من حركة الإصبع الفعلية (بدون قص عند الحد): الهز يكمل بنفس الفاصل حتى لو المؤشر ممتلئ أو فاضي
+                                            val bi = kotlin.math.floor(raw * 20f).toInt()
                                             if (bi != hIdx) { if (hIdx != Int.MIN_VALUE) buzz(hapticView, false); hIdx = bi }
                                             hud = 2; hudLevel = lv
                                         }
