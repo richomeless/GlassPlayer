@@ -2465,6 +2465,35 @@ fun App(player: Player?, inPip: Boolean, openReq: Int, themeMode: Int, themeStyl
                             var hIdx = Int.MIN_VALUE
                             while (true) {
                                 val ev = awaitPointerEvent()
+                                // إصبعين: قرص للتقريب والتبعيد (والفيديو يتحرك مع حركة منتصف الإصبعين)
+                                if (mode == 0 && !closing && ev.changes.count { it.pressed } >= 2) {
+                                    flingJob[0]?.cancel()
+                                    val sw = size.width.toFloat(); val sh = size.height.toFloat()
+                                    var evP = ev
+                                    while (true) {
+                                        val ps = evP.changes.filter { it.pressed }
+                                        if (ps.size < 2) break
+                                        val pa = ps[0]; val pb = ps[1]
+                                        val spanNow = (pa.position - pb.position).getDistance()
+                                        val spanPrev = (pa.previousPosition - pb.previousPosition).getDistance()
+                                        if (spanNow > 0f && spanPrev > 0f) {
+                                            val cNow = (pa.position + pb.position) / 2f
+                                            val cPrev = (pa.previousPosition + pb.previousPosition) / 2f
+                                            val zNew = (zoom * spanNow / spanPrev).coerceIn(1f, 4f)
+                                            val anchor = Offset(cNow.x - sw / 2f, cNow.y - sh / 2f)
+                                            val np = zoomAt(zoom, Offset(panX, panY), zNew, anchor, sw, sh)
+                                            val lim = panLimit(zNew, sw, sh)
+                                            panX = (np.x + (cNow.x - cPrev.x)).coerceIn(-lim.x, lim.x)
+                                            panY = (np.y + (cNow.y - cPrev.y)).coerceIn(-lim.y, lim.y)
+                                            zoom = zNew
+                                        }
+                                        evP.changes.forEach { it.consume() }
+                                        evP = awaitPointerEvent()
+                                    }
+                                    // رجعنا تقريباً للحجم الطبيعي: نثبّته على 1 بالضبط عشان إيماءة الشاشة الكاملة ما تتعطل
+                                    if (zoom < 1.05f) { zoom = 1f; panX = 0f; panY = 0f }
+                                    return@awaitEachGesture
+                                }
                                 val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
                                 vt.addPointerInputChange(ch)
                                 if (!ch.pressed) { released = true; break }
